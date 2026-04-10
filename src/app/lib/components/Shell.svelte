@@ -1,0 +1,59 @@
+<script lang="ts">
+    import { type Snippet } from "svelte";
+    import Titlebar from "$lib/components/Titlebar.svelte";
+    import ActivityBar from "$lib/components/ActivityBar.svelte";
+    import Sidebar from "$lib/components/Sidebar.svelte";
+    import StatusBar from "$lib/components/StatusBar.svelte";
+    import CommandPalette from "$lib/components/CommandPalette.svelte";
+    import { workspaceStore } from "$lib/stores/workspace.svelte";
+
+    interface Props {
+        children?: Snippet;
+    }
+
+    let { children }: Props = $props();
+    let commandPaletteOpen = $state(false);
+
+    function onKeydown(e: KeyboardEvent) {
+        // Ctrl+K / Cmd+K — open/close command palette
+        if (e.key === "k" && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            commandPaletteOpen = !commandPaletteOpen;
+            return;
+        }
+        // Ctrl+B / Cmd+B — toggle sidebar
+        if (e.key === "b" && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            workspaceStore.toggleSidebar();
+            return;
+        }
+        // Ctrl+\ / Cmd+\ — split active pane vertically (side by side)
+        if (e.key === "\\" && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            workspaceStore.splitPane(workspaceStore.activePaneId, "horizontal");
+            return;
+        }
+
+        // Ctrl+Shift+L / Cmd+Shift+L — toggle source/live preview mode
+        if (e.key.toLowerCase() === "l" && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+            e.preventDefault();
+            workspaceStore.togglePreviewMode();
+            return;
+        }
+    }
+</script>
+
+<svelte:window onkeydown={onKeydown} />
+
+<div class="flex h-full flex-col overflow-hidden">
+    <Titlebar />
+    <div class="flex flex-1 overflow-hidden">
+        <ActivityBar />
+        <Sidebar />
+        <div class="flex-1 overflow-hidden bg-surface">
+            {@render children?.()}
+        </div>
+    </div>
+    <StatusBar />
+    <CommandPalette bind:open={commandPaletteOpen} />
+</div>

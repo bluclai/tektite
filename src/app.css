@@ -1,0 +1,567 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn-svelte/tailwind.css";
+@import "@fontsource-variable/inter";
+
+/* ============================================================================
+   DESIGN SYSTEM: Clay
+   High-end editorial dark mode with tonal depth and intentional asymmetry
+   ============================================================================ */
+
+@font-face {
+    font-family: "Inter";
+    src: url("/fonts/Inter.ttf") format("truetype");
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+    unicode-range:
+        U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+        U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+        U+FEFF, U+FFFD;
+}
+
+@font-face {
+    font-family: "Bitter";
+    src: url("/fonts/Bitter.ttf") format("truetype");
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+    unicode-range:
+        U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+        U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+        U+FEFF, U+FFFD;
+}
+
+/* --- TAILWIND V4 THEME INTEGRATION --- */
+/* Registers tokens as Tailwind utilities (bg-primary, text-tertiary, etc.) */
+@theme {
+    /* Design System Core Colors */
+    --color-primary: #bdc2ff;
+    --color-primary-container: #4a47a3;
+    --color-on-primary: #1a1760;
+    --color-tertiary: #cebdff;
+    --color-tertiary-container: #4a4473;
+    --color-on-tertiary: #1a1440;
+
+    /* Surface Tiers */
+    --color-surface: #131314;
+    --color-surface-dim: #0d0d0e;
+    --color-surface-bright: #161617;
+    --color-surface-variant: #2a2a2e;
+    --color-surface-container-lowest: #0d0d0e;
+    --color-surface-container-low: #1a1a1b;
+    --color-surface-container: #1f1f20;
+    --color-surface-container-high: #2a2a2b;
+    --color-surface-container-highest: #353536;
+
+    /* Text & On-Surface */
+    --color-on-surface: #e8e8ea;
+    --color-on-surface-variant: #c9c7cc;
+    --color-outline: #9391a0;
+    --color-outline-variant: #49474e;
+
+    /* Font Families */
+    --font-sans: "Inter Variable", sans-serif;
+    --font-prose: "Bitter", Georgia, serif;
+
+    /* Shadcn Semantic Token Aliases (enables bg-background, text-foreground, etc.) */
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --color-chart-1: var(--chart-1);
+    --color-chart-2: var(--chart-2);
+    --color-chart-3: var(--chart-3);
+    --color-chart-4: var(--chart-4);
+    --color-chart-5: var(--chart-5);
+    --color-sidebar: var(--sidebar);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-ring: var(--sidebar-ring);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* --- CSS CUSTOM PROPERTIES --- */
+/* Always dark — no light/dark toggle. Shadcn semantic tokens are mapped to
+   the design system palette so shadcn components automatically adopt the look. */
+:root {
+    color-scheme: dark;
+
+    /* Effects */
+    --shadow-ambient: 0 16px 64px rgba(0, 0, 0, 0.08);
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.12);
+    --blur-glass: 20px;
+
+    /* Transitions */
+    --transition-micro: 150ms ease-out;
+    --transition-base: 200ms ease-out;
+    --transition-macro: 300ms ease-out;
+
+    /* Shadcn Semantic Tokens → Design System Values */
+    --radius: 0.45rem;
+    --background: #131314;
+    --foreground: #e8e8ea;
+    --card: #1a1a1b;
+    --card-foreground: #e8e8ea;
+    --popover: #353536;
+    --popover-foreground: #e8e8ea;
+    --primary: #bdc2ff;
+    --primary-foreground: #1a1760;
+    --secondary: #2a2a2b;
+    --secondary-foreground: #e8e8ea;
+    --muted: #1f1f20;
+    --muted-foreground: #c9c7cc;
+    --accent: #2a2a2b;
+    --accent-foreground: #e8e8ea;
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: #49474e;
+    --input: #1a1a1b;
+    --ring: #bdc2ff;
+    --chart-1: #bdc2ff;
+    --chart-2: #cebdff;
+    --chart-3: #9391a0;
+    --chart-4: #49474e;
+    --chart-5: #353536;
+    --sidebar: #1a1a1b;
+    --sidebar-foreground: #e8e8ea;
+    --sidebar-primary: #bdc2ff;
+    --sidebar-primary-foreground: #1a1760;
+    --sidebar-accent: #2a2a2b;
+    --sidebar-accent-foreground: #e8e8ea;
+    --sidebar-border: #49474e;
+    --sidebar-ring: #bdc2ff;
+}
+
+/* --- TYPOGRAPHY SETUP --- */
+@layer base {
+    * {
+        @apply border-border outline-ring/50;
+    }
+
+    html {
+        font-family: var(--font-sans);
+        background-color: var(--color-surface);
+        color: var(--color-on-surface);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+        @apply bg-background text-foreground;
+    }
+
+    /* Display Scale */
+    h1,
+    .display-lg {
+        font-family: var(--font-sans);
+        font-size: 3.5rem;
+        font-weight: 400;
+        line-height: 1.1;
+    }
+
+    /* Headline Scale */
+    h2,
+    .headline-md {
+        font-family: var(--font-sans);
+        font-size: 1.75rem;
+        font-weight: 500;
+        line-height: 1.2;
+    }
+
+    h3,
+    .headline-sm {
+        font-family: var(--font-sans);
+        font-size: 1.5rem;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        line-height: 1.3;
+    }
+
+    /* Body Scale */
+    body,
+    p,
+    .body-lg {
+        font-family: var(--font-sans);
+        font-size: 1rem;
+        line-height: 1.5;
+    }
+
+    /* Editorial Content */
+    .prose,
+    .editor {
+        font-family: var(--font-sans);
+        font-size: 1rem;
+        line-height: 1.6;
+    }
+
+    .body-md {
+        font-size: 0.875rem;
+        line-height: 1.5;
+    }
+
+    .label-lg {
+        font-size: 0.75rem;
+        font-weight: 500;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+
+    /* Remove default margins */
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6,
+    p {
+        margin: 0;
+    }
+}
+
+/* --- SPACING SCALE --- */
+@layer utilities {
+    .space-tight {
+        margin-bottom: 0.5rem;
+    }
+
+    .space-standard {
+        margin-bottom: 1rem;
+    }
+
+    .space-editorial {
+        margin-bottom: 2rem;
+    }
+
+    .space-atmospheric {
+        margin-bottom: 4rem;
+    }
+
+    .gutter-standard {
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+
+    .gutter-editorial {
+        padding-left: 2rem;
+        padding-right: 2rem;
+    }
+
+    .gutter-atmospheric {
+        padding-left: 4rem;
+        padding-right: 4rem;
+    }
+
+    .section-gap-standard {
+        gap: 1rem;
+    }
+
+    .section-gap-editorial {
+        gap: 2rem;
+    }
+}
+
+/* --- SURFACE HIERARCHY --- */
+@layer components {
+    .surface {
+        background-color: var(--color-surface);
+    }
+
+    .surface-container-low {
+        background-color: var(--color-surface-container-low);
+    }
+
+    .surface-container {
+        background-color: var(--color-surface-container);
+    }
+
+    .surface-container-high {
+        background-color: var(--color-surface-container-high);
+    }
+
+    .surface-container-highest {
+        background-color: var(--color-surface-container-highest);
+    }
+}
+
+/* --- BUTTONS --- */
+@layer components {
+    .btn {
+        @apply inline-flex cursor-pointer items-center justify-center rounded-[6px] font-sans font-medium transition-all duration-200 ease-out;
+        padding: 0.5rem 1rem;
+    }
+
+    .btn-primary {
+        background-color: var(--color-primary);
+        color: var(--color-on-primary);
+        border: none;
+    }
+
+    .btn-primary:hover {
+        box-shadow: 0 0 20px
+            color-mix(in srgb, var(--color-primary) 20%, transparent);
+    }
+
+    .btn-secondary {
+        background-color: transparent;
+        color: var(--color-on-surface-variant);
+        border: 1px solid
+            color-mix(in srgb, var(--color-outline-variant) 15%, transparent);
+    }
+
+    .btn-secondary:hover {
+        background-color: var(--color-surface-container-high);
+    }
+
+    .btn-tertiary {
+        background-color: transparent;
+        color: var(--color-on-surface-variant);
+        border: none;
+    }
+
+    .btn-tertiary:hover {
+        background-color: var(--color-surface-container-high);
+    }
+
+    .btn:disabled {
+        @apply cursor-not-allowed opacity-50;
+    }
+}
+
+/* --- INPUTS & FORM ELEMENTS --- */
+@layer components {
+    .input {
+        background-color: transparent;
+        border: none;
+        border-bottom: 1px solid
+            color-mix(in srgb, var(--color-outline-variant) 15%, transparent);
+        color: var(--color-on-surface);
+        transition: border-color var(--transition-base);
+        padding: 0.5rem 0;
+    }
+
+    .input::placeholder {
+        color: color-mix(
+            in srgb,
+            var(--color-on-surface-variant) 60%,
+            transparent
+        );
+    }
+
+    .input:focus {
+        outline: none;
+        border-bottom-color: var(--color-primary);
+    }
+
+    .textarea {
+        background-color: transparent;
+        border: 1px solid
+            color-mix(in srgb, var(--color-outline-variant) 15%, transparent);
+        border-radius: 6px;
+        color: var(--color-on-surface);
+        font-family: var(--font-prose);
+        transition: border-color var(--transition-base);
+        padding: 0.75rem;
+    }
+
+    .textarea:focus {
+        outline: none;
+        border-color: var(--color-primary);
+    }
+}
+
+/* --- AI-NATIVE COMPONENTS --- */
+@layer components {
+    .neural-input {
+        background-color: var(--color-surface-container-highest);
+        border: 1px solid
+            color-mix(in srgb, var(--color-tertiary) 30%, transparent);
+        border-radius: 6px;
+        transition:
+            border-color var(--transition-base),
+            box-shadow var(--transition-base);
+        padding: 0.75rem 1rem;
+    }
+
+    .neural-input:focus {
+        outline: none;
+        border-color: var(--color-tertiary);
+    }
+
+    .neural-input.generating {
+        box-shadow: 0 0 8px
+            color-mix(in srgb, var(--color-tertiary) 60%, transparent);
+    }
+
+    .generation-glow {
+        animation: aura-pulse 2s ease-in-out infinite;
+    }
+}
+
+@keyframes aura-pulse {
+    0%,
+    100% {
+        box-shadow: 0 0 8px
+            color-mix(in srgb, var(--color-tertiary) 40%, transparent);
+    }
+    50% {
+        box-shadow: 0 0 12px
+            color-mix(in srgb, var(--color-tertiary) 60%, transparent);
+    }
+}
+
+/* --- EDITOR CANVAS --- */
+@layer components {
+    .editor {
+        background-color: var(--color-surface);
+        border: none;
+        color: var(--color-on-surface);
+        font-family: var(--font-prose);
+        font-size: 1rem;
+        line-height: 1.6;
+        padding: 0 4rem;
+        min-height: 100vh;
+    }
+
+    .editor:focus {
+        outline: none;
+    }
+}
+
+/* --- LISTS & DIVIDERS (NO-LINE RULE) --- */
+@layer components {
+    .list {
+        @apply m-0 list-none p-0;
+    }
+
+    .list-item {
+        transition: background-color var(--transition-base);
+        padding: 0.25rem 0;
+    }
+
+    .list-item:hover {
+        background-color: var(--color-surface-container-high);
+    }
+
+    .list-item + .list-item {
+        @apply mt-1;
+    }
+}
+
+/* --- CARDS --- */
+@layer components {
+    .card {
+        border-radius: 8px;
+        border: none;
+        background-color: var(--color-surface-container-low);
+        transition: background-color var(--transition-base);
+        padding: 1.5rem;
+    }
+
+    .card:hover {
+        background-color: var(--color-surface-container);
+    }
+}
+
+/* --- COMMAND PALETTE --- */
+@layer components {
+    .command-palette {
+        @apply fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-[12px];
+        background-color: var(--color-surface-container-highest);
+        backdrop-filter: blur(40px);
+        border: none;
+        padding: 2.5rem;
+        box-shadow: 0 0 64px rgba(0, 0, 0, 0.12);
+        max-width: 600px;
+        width: 90%;
+        max-height: 80vh;
+        overflow-y: auto;
+        z-index: 1000;
+    }
+}
+
+/* --- FLOATING ELEMENTS (GLASS & GRADIENT) --- */
+@layer components {
+    /* background uses color-mix — avoids opacity bleeding into children */
+    .floating {
+        background-color: color-mix(
+            in srgb,
+            var(--color-surface-variant) 95%,
+            transparent
+        );
+        backdrop-filter: blur(var(--blur-glass));
+        border-radius: 8px;
+        box-shadow: var(--shadow-ambient);
+    }
+
+    .gradient-cta {
+        background: linear-gradient(
+            12deg,
+            var(--color-primary),
+            var(--color-primary-container)
+        );
+    }
+}
+
+/* --- ACCESSIBILITY: GHOST BORDER --- */
+@layer components {
+    .ghost-border {
+        border: 1px solid
+            color-mix(in srgb, var(--color-outline-variant) 15%, transparent);
+    }
+}
+
+/* --- TRANSITIONS --- */
+@layer utilities {
+    .transition-micro {
+        transition: all var(--transition-micro);
+    }
+
+    .transition-base {
+        transition: all var(--transition-base);
+    }
+
+    .transition-macro {
+        transition: all var(--transition-macro);
+    }
+}
+
+/* --- SCROLLBAR --- */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--color-surface);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--color-surface-container-high);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--color-surface-container-highest);
+}

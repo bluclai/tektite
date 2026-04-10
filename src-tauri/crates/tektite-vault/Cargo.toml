@@ -1,0 +1,15 @@
+[package]
+name = "tektite-vault"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tektite-parser = { path = "../tektite-parser" }
+tektite-index = { path = "../tektite-index" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+walkdir = "2"
+notify = "6"
+notify-debouncer-full = "0.3"

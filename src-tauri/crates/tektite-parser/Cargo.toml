@@ -1,0 +1,11 @@
+[package]
+name = "tektite-parser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pulldown-cmark = "0.12"
+serde = { workspace = true }
+serde_yaml = "0.9"
+regex = "1"
+thiserror = { workspace = true }

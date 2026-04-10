@@ -1,0 +1,10 @@
+[package]
+name = "tektite-search"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tektite-index = { path = "../tektite-index" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
