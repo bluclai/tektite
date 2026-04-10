@@ -36,6 +36,8 @@ pub enum VaultError {
     NotOpen,
     #[error("Path is outside vault root")]
     OutsideRoot,
+    #[error("Invalid path: {0}")]
+    InvalidPath(String),
     #[error("Watcher error: {0}")]
     Watcher(String),
 }
@@ -53,6 +55,8 @@ pub struct VaultTreeEntry {
     pub name: String,
     /// `true` if this entry is a directory.
     pub is_dir: bool,
+    /// `true` if this entry is a markdown file.
+    pub is_markdown: bool,
     /// Child entries — populated for directories, empty for files.
     pub children: Vec<VaultTreeEntry>,
 }
@@ -107,6 +111,11 @@ impl Vault {
     // File I/O
     // -----------------------------------------------------------------------
 
+    /// Resolves a vault-relative path to an absolute path inside the vault.
+    pub fn absolute_path(&self, rel_path: &str) -> Result<PathBuf, VaultError> {
+        self.abs(rel_path)
+    }
+
     /// Reads a file. `rel_path` is vault-relative.
     pub fn read_file(&self, rel_path: &str) -> Result<String, VaultError> {
         let abs = self.abs(rel_path)?;
@@ -137,16 +146,33 @@ impl Vault {
     /// The write is registered in the write-token set.
     pub fn create_file(&self, rel_path: &str) -> Result<(), VaultError> {
         let abs = self.abs(rel_path)?;
+        if abs.exists() {
+            return Err(VaultError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("file already exists: {}", abs.display()),
+            )));
+        }
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent)?;
         }
         self.write_tokens.insert(abs.clone());
-        std::fs::write(&abs, "").map_err(VaultError::Io)
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&abs)
+            .map(|_| ())
+            .map_err(VaultError::Io)
     }
 
     /// Creates a directory (and all intermediate directories).
     pub fn create_folder(&self, rel_path: &str) -> Result<(), VaultError> {
         let abs = self.abs(rel_path)?;
+        if abs.exists() {
+            return Err(VaultError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("folder already exists: {}", abs.display()),
+            )));
+        }
         std::fs::create_dir_all(abs).map_err(VaultError::Io)
     }
 
@@ -450,9 +476,8 @@ impl Vault {
     /// Resolves a vault-relative path to an absolute path, rejecting attempts
     /// to escape the vault root (path traversal).
     fn abs(&self, rel_path: &str) -> Result<PathBuf, VaultError> {
-        // Normalise separators and reject empty paths.
-        let rel = rel_path.trim_start_matches('/');
-        let candidate = self.root.join(rel);
+        let rel = normalize_rel_path(rel_path)?;
+        let candidate = self.root.join(&rel);
         // Canonicalise the parent directory (file may not exist yet) to
         // resolve `..` components safely.
         let parent = candidate.parent().unwrap_or(&candidate);
@@ -482,6 +507,30 @@ impl Vault {
 fn is_markdown(path: &Path) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+}
+
+fn normalize_rel_path(rel_path: &str) -> Result<String, VaultError> {
+    let rel = rel_path.trim().replace('\\', "/");
+    if rel.is_empty() {
+        return Err(VaultError::InvalidPath("path cannot be empty".into()));
+    }
+
+    let mut parts = Vec::new();
+    for part in rel.split('/') {
+        if part.is_empty() {
+            return Err(VaultError::InvalidPath(
+                "path cannot contain empty segments".into(),
+            ));
+        }
+        if part == "." || part == ".." {
+            return Err(VaultError::InvalidPath(format!(
+                "path cannot contain navigation segments: {rel_path}"
+            )));
+        }
+        parts.push(part);
+    }
+
+    Ok(parts.join("/"))
 }
 
 /// Returns the mtime of a file in seconds since UNIX_EPOCH, or 0 on failure.
@@ -536,6 +585,36 @@ mod tests {
             .write_file("../escape.md", "nope")
             .expect_err("outside-root write should fail");
 
-        assert!(matches!(err, VaultError::OutsideRoot));
+        assert!(matches!(err, VaultError::InvalidPath(_)));
+    }
+
+    #[test]
+    fn create_file_rejects_invalid_relative_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vault = Vault::open(dir.path()).expect("open vault");
+
+        let err = vault
+            .create_file("notes//today.md")
+            .expect_err("invalid path should fail");
+
+        assert!(matches!(err, VaultError::InvalidPath(_)));
+    }
+
+    #[test]
+    fn create_file_rejects_duplicate_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vault = Vault::open(dir.path()).expect("open vault");
+
+        vault
+            .create_file("notes/today.md")
+            .expect("first create succeeds");
+
+        let err = vault
+            .create_file("notes/today.md")
+            .expect_err("duplicate create should fail");
+
+        assert!(
+            matches!(err, VaultError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists)
+        );
     }
 }

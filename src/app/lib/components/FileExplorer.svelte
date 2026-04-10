@@ -3,8 +3,9 @@
      * FileExplorer — Files sidebar panel.
      *
      * Renders the vault directory tree, opens markdown files into the active
-     * tab on click, and provides inline new-file / new-folder / delete actions.
-     * Phase 9: adds rename action that opens the RenameDialog.
+     * tab on click, and provides inline new-file / new-folder actions.
+     * Delete is intentionally hidden for v0.1 because it is not yet trustworthy
+     * enough to keep in the daily-use path.
      */
     import { ChevronRight, File, FileText, FolderClosed, FolderOpen } from 'lucide-svelte';
     import { filesStore, type TreeEntry } from '$lib/stores/files.svelte';
@@ -16,12 +17,22 @@
     // Collapse state
     // ---------------------------------------------------------------------------
 
-    // Vault-relative paths of directories that are currently collapsed.
     let collapsed = $state<Set<string>>(new Set());
 
     function toggleDir(path: string) {
         const next = new Set(collapsed);
-        if (next.has(path)) { next.delete(path); } else { next.add(path); }
+        if (next.has(path)) {
+            next.delete(path);
+        } else {
+            next.add(path);
+        }
+        collapsed = next;
+    }
+
+    function expandDir(path: string) {
+        if (!path) return;
+        const next = new Set(collapsed);
+        next.delete(path);
         collapsed = next;
     }
 
@@ -31,40 +42,90 @@
 
     let pendingCreate = $state<{ parentPath: string; type: 'file' | 'folder' } | null>(null);
     let pendingCreateName = $state('');
+    let createError = $state<string | null>(null);
     let createInputEl = $state<HTMLInputElement | null>(null);
+
+    function normalizeCreateName(rawName: string, type: 'file' | 'folder'): string | null {
+        const trimmed = rawName.trim();
+        if (!trimmed) {
+            createError = null;
+            return null;
+        }
+        if (trimmed === '.' || trimmed === '..') {
+            createError = 'Name cannot be . or ..';
+            return null;
+        }
+        if (trimmed.includes('/') || trimmed.includes('\\')) {
+            createError = 'Use the current folder instead of typing path separators';
+            return null;
+        }
+
+        if (type === 'file' && !/\.[^./]+$/.test(trimmed)) {
+            return `${trimmed}.md`;
+        }
+
+        return trimmed;
+    }
 
     function startCreate(parentPath: string, type: 'file' | 'folder', e: MouseEvent) {
         e.stopPropagation();
+        expandDir(parentPath);
         pendingCreate = { parentPath, type };
         pendingCreateName = '';
+        createError = null;
+        filesStore.clearError();
         setTimeout(() => createInputEl?.focus(), 0);
     }
 
     async function commitCreate() {
-        if (!pendingCreate || !pendingCreateName.trim()) {
-            pendingCreate = null;
+        if (!pendingCreate) {
             return;
         }
+
+        const normalizedName = normalizeCreateName(pendingCreateName, pendingCreate.type);
+        if (!normalizedName) {
+            if (!pendingCreateName.trim()) {
+                pendingCreate = null;
+                createError = null;
+            }
+            return;
+        }
+
         const { parentPath, type } = pendingCreate;
-        const name = pendingCreateName.trim();
-        const relPath = parentPath ? `${parentPath}/${name}` : name;
-        pendingCreate = null;
-        pendingCreateName = '';
-        if (type === 'file') {
-            await filesStore.createFile(relPath);
-        } else {
-            await filesStore.createFolder(relPath);
+        const relPath = parentPath ? `${parentPath}/${normalizedName}` : normalizedName;
+
+        try {
+            filesStore.clearError();
+            if (type === 'file') {
+                await filesStore.createFile(relPath);
+                workspaceStore.openTab(relPath);
+            } else {
+                await filesStore.createFolder(relPath);
+                expandDir(relPath);
+            }
+            pendingCreate = null;
+            pendingCreateName = '';
+            createError = null;
+        } catch (error) {
+            createError = error instanceof Error ? error.message : String(error);
+            setTimeout(() => createInputEl?.focus(), 0);
         }
     }
 
     function cancelCreate() {
         pendingCreate = null;
         pendingCreateName = '';
+        createError = null;
     }
 
     function onCreateKeydown(e: KeyboardEvent) {
-        if (e.key === 'Enter') { void commitCreate(); }
-        else if (e.key === 'Escape') { cancelCreate(); }
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            void commitCreate();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            cancelCreate();
+        }
     }
 
     // ---------------------------------------------------------------------------
@@ -72,21 +133,16 @@
     // ---------------------------------------------------------------------------
 
     function openFile(entry: TreeEntry) {
-        if (entry.is_dir) return;
+        if (entry.is_dir || !entry.is_markdown) return;
         workspaceStore.openTab(entry.path);
     }
 
-    async function deleteEntry(entry: TreeEntry, e: MouseEvent) {
-        e.stopPropagation();
-        await filesStore.delete(entry.path);
-    }
-
-    function isMarkdown(entry: TreeEntry) {
-        return !entry.is_dir && entry.name.endsWith('.md');
+    function canOpen(entry: TreeEntry) {
+        return entry.is_dir || entry.is_markdown;
     }
 
     // ---------------------------------------------------------------------------
-    // Rename dialog state (Phase 9)
+    // Rename dialog state
     // ---------------------------------------------------------------------------
 
     let renameDialogOpen = $state(false);
@@ -99,9 +155,6 @@
     }
 </script>
 
-<!-- -----------------------------------------------------------------------
-     Panel toolbar
-     ----------------------------------------------------------------------- -->
 <div class="flex h-full flex-col overflow-hidden">
     <div class="flex h-8 shrink-0 items-center gap-0.5 px-2">
         <span class="flex-1"></span>
@@ -112,7 +165,6 @@
             onclick={(e) => startCreate('', 'file', e)}
             aria-label="New file"
         >
-            <!-- document + plus icon -->
             <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
                 <path d="M2 2a1 1 0 0 1 1-1h4.5L10 3.5V11a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V2Z" stroke="currentColor" stroke-width="1.2"/>
                 <path d="M7 1v3h3" stroke="currentColor" stroke-width="1.2"/>
@@ -127,7 +179,6 @@
             onclick={(e) => startCreate('', 'folder', e)}
             aria-label="New folder"
         >
-            <!-- folder + plus icon -->
             <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
                 <path d="M1 3.5C1 3 1.4 2.5 2 2.5h3l1 1.5h5.5c.6 0 1 .5 1 1V10c0 .5-.4 1-1 1H2c-.6 0-1-.5-1-1V3.5Z" stroke="currentColor" stroke-width="1.2"/>
                 <line x1="7" y1="6" x2="7" y2="9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
@@ -136,7 +187,6 @@
         </button>
     </div>
 
-    <!-- Root-level pending create input -->
     {#if pendingCreate?.parentPath === ''}
         <div class="px-2 pb-0.5">
             <input
@@ -147,11 +197,17 @@
                 placeholder={pendingCreate.type === 'file' ? 'filename.md' : 'folder name'}
                 class="w-full rounded bg-surface-container-high px-2 py-0.5 text-xs text-on-surface outline-none ring-1 ring-primary/50 focus:ring-primary"
             />
+            {#if createError}
+                <p class="pt-1 text-[11px] text-red-400">{createError}</p>
+            {/if}
         </div>
     {/if}
 
-    <!-- Tree -->
     <div class="flex-1 overflow-y-auto py-0.5" role="tree" aria-label="Vault files">
+        {#if filesStore.error}
+            <p class="px-4 py-2 text-xs text-red-400">{filesStore.error}</p>
+        {/if}
+
         {#if filesStore.loading && filesStore.tree.length === 0}
             <p class="px-4 py-2 text-xs text-on-surface-variant opacity-40">Loading…</p>
         {:else if filesStore.tree.length === 0}
@@ -164,27 +220,24 @@
     </div>
 </div>
 
-<!-- -----------------------------------------------------------------------
-     Recursive tree node snippet
-     ----------------------------------------------------------------------- -->
 {#snippet treeNode(entry: TreeEntry, depth: number)}
     {@const isCollapsed = collapsed.has(entry.path)}
-    {@const isMd = isMarkdown(entry)}
+    {@const isMd = entry.is_markdown}
+    {@const openable = canOpen(entry)}
 
     <div role="treeitem" aria-expanded={entry.is_dir ? !isCollapsed : undefined} aria-selected="false">
-        <!-- Row -->
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <div
-            class="group flex h-6 cursor-pointer select-none items-center gap-1.5 rounded px-1 text-xs
+            class="group flex h-6 select-none items-center gap-1.5 rounded px-1 text-xs
                    transition-colors duration-100 hover:bg-surface-container-high
-                   {!isMd && !entry.is_dir ? 'text-on-surface-variant opacity-50' : 'text-on-surface'}"
+                   {openable ? 'cursor-pointer' : 'cursor-default'}
+                   {!isMd && !entry.is_dir ? 'text-on-surface-variant opacity-45' : 'text-on-surface'}"
             style="padding-left: {depth * 12 + 4}px"
             onclick={() => (entry.is_dir ? toggleDir(entry.path) : openFile(entry))}
-            tabindex="0"
+            tabindex={openable ? 0 : undefined}
             role="treeitem"
             aria-selected="false"
         >
-            <!-- Chevron + icon -->
             {#if entry.is_dir}
                 <ChevronRight
                     size={10}
@@ -198,18 +251,16 @@
                     <FolderOpen size={13} strokeWidth={1.4} class="shrink-0 text-on-surface-variant opacity-70" aria-hidden="true" />
                 {/if}
             {:else}
-                <!-- Indent spacer (aligns with dirs that have chevron) -->
                 <span class="w-2.5 shrink-0" aria-hidden="true"></span>
                 {#if isMd}
                     <FileText size={13} strokeWidth={1.4} class="shrink-0 text-on-surface-variant opacity-50" aria-hidden="true" />
                 {:else}
-                    <File size={13} strokeWidth={1.4} class="shrink-0 text-on-surface-variant opacity-30" aria-hidden="true" />
+                    <File size={13} strokeWidth={1.4} class="shrink-0 text-on-surface-variant opacity-25" aria-hidden="true" />
                 {/if}
             {/if}
 
             <span class="min-w-0 flex-1 truncate">{entry.name}</span>
 
-            <!-- Hover actions -->
             <span class="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-100 group-hover:opacity-100">
                 {#if entry.is_dir}
                     <button
@@ -224,8 +275,19 @@
                             <line x1="1" y1="4.5" x2="8" y2="4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
                         </svg>
                     </button>
+                    <button
+                        class="flex h-4 w-4 items-center justify-center rounded text-on-surface-variant hover:text-on-surface"
+                        title="New folder in {entry.name}"
+                        onclick={(e) => startCreate(entry.path, 'folder', e)}
+                        tabindex="-1"
+                        aria-label="New folder in {entry.name}"
+                    >
+                        <svg width="9" height="9" viewBox="0 0 9 9" fill="none" aria-hidden="true">
+                            <line x1="4.5" y1="1" x2="4.5" y2="8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                            <line x1="1" y1="4.5" x2="8" y2="4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                        </svg>
+                    </button>
                 {/if}
-                <!-- Rename button (pencil icon) -->
                 <button
                     class="flex h-4 w-4 items-center justify-center rounded text-on-surface-variant hover:text-on-surface"
                     title="Rename {entry.name}"
@@ -238,22 +300,9 @@
                         <line x1="4.5" y1="2" x2="6" y2="3.5" stroke="currentColor" stroke-width="1.2"/>
                     </svg>
                 </button>
-                <button
-                    class="flex h-4 w-4 items-center justify-center rounded text-on-surface-variant hover:text-red-400"
-                    title="Delete {entry.name}"
-                    onclick={(e) => deleteEntry(entry, e)}
-                    tabindex="-1"
-                    aria-label="Delete {entry.name}"
-                >
-                    <svg width="7" height="7" viewBox="0 0 7 7" fill="none" aria-hidden="true">
-                        <line x1="1" y1="1" x2="6" y2="6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-                        <line x1="6" y1="1" x2="1" y2="6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-                    </svg>
-                </button>
             </span>
         </div>
 
-        <!-- Inline create input inside an expanded directory -->
         {#if pendingCreate?.parentPath === entry.path}
             <div style="padding-left: {(depth + 1) * 12 + 4}px" class="pr-2 pb-0.5">
                 <input
@@ -264,10 +313,12 @@
                     placeholder={pendingCreate.type === 'file' ? 'filename.md' : 'folder name'}
                     class="w-full rounded bg-surface-container-high px-2 py-0.5 text-xs text-on-surface outline-none ring-1 ring-primary/50 focus:ring-primary"
                 />
+                {#if createError}
+                    <p class="pt-1 text-[11px] text-red-400">{createError}</p>
+                {/if}
             </div>
         {/if}
 
-        <!-- Recurse into children when expanded -->
         {#if entry.is_dir && !isCollapsed}
             {#each entry.children as child (child.path)}
                 {@render treeNode(child, depth + 1)}
@@ -276,7 +327,6 @@
     </div>
 {/snippet}
 
-<!-- Rename dialog (Phase 9) — rendered outside the tree so it overlays the full app -->
 {#if renameTarget}
     <RenameDialog
         bind:open={renameDialogOpen}
