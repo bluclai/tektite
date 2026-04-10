@@ -4374,6 +4374,7 @@ dependencies = [
  "serde_json",
  "tektite-index",
  "tektite-parser",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "walkdir",

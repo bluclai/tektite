@@ -8,6 +8,7 @@ export interface VaultEntry {
 
 let _path = $state<string | null>(null);
 let _name = $state<string>("");
+let _openError = $state<string | null>(null);
 
 export const vaultStore = {
   get path(): string | null {
@@ -16,16 +17,30 @@ export const vaultStore = {
   get name(): string {
     return _name;
   },
+
+  get openError(): string | null {
+    return _openError;
+  },
+
+  clearOpenError() {
+    _openError = null;
+  },
 };
 
 export async function openVault(vaultPath: string): Promise<void> {
-  const entry = await invoke<VaultEntry>("vault_open", { path: vaultPath });
-  _path = entry.path;
-  _name = entry.name;
+  _openError = null;
+  try {
+    const entry = await invoke<VaultEntry>("vault_open", { path: vaultPath });
+    _path = entry.path;
+    _name = entry.name;
 
-  // Start listening for external filesystem changes, then load initial tree.
-  await filesStore.startWatching();
-  await filesStore.refresh();
+    // Start listening for external filesystem changes, then load initial tree.
+    await filesStore.startWatching();
+    await filesStore.refresh();
+  } catch (error) {
+    _openError = error instanceof Error ? error.message : String(error);
+    throw error;
+  }
 }
 
 export async function getRecentVaults(): Promise<VaultEntry[]> {

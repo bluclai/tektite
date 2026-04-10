@@ -1,5 +1,6 @@
 <script lang="ts">
     import { editorStore, type SaveState } from '$lib/stores/editor.svelte';
+    import { vaultStore } from '$lib/stores/vault.svelte';
     import { workspaceStore } from '$lib/stores/workspace.svelte';
 
     // Map save state to display label
@@ -11,6 +12,17 @@
     };
 
     const editorModeLabel = $derived(workspaceStore.previewMode ? 'Live Preview' : 'Source');
+    const statusLabel = $derived(
+        vaultStore.openError && !editorStore.statusDetail ? 'Open error' : labels[editorStore.saveState],
+    );
+    const targetLabel = $derived(
+        editorStore.statusTarget?.split('/').pop() ?? editorStore.statusTarget ?? null,
+    );
+    const titleText = $derived(
+        [statusLabel, targetLabel, editorStore.statusDetail || vaultStore.openError]
+            .filter(Boolean)
+            .join(' — '),
+    );
 </script>
 
 <footer
@@ -21,11 +33,26 @@
         <span class="opacity-40">•</span>
         <span
             class="transition-colors duration-150
-                {editorStore.saveState === 'error'
+                {editorStore.saveState === 'error' || vaultStore.openError
                 ? 'text-red-400 opacity-80'
                 : 'text-on-surface-variant opacity-60'}"
+            title={titleText}
         >
-            {labels[editorStore.saveState]}
+            {statusLabel}
         </span>
+        {#if targetLabel}
+            <span class="max-w-40 truncate" title={editorStore.statusTarget ?? undefined}>
+                {targetLabel}
+            </span>
+        {/if}
+        {#if editorStore.statusDetail}
+            <span class="max-w-96 truncate" title={editorStore.statusDetail}>
+                {editorStore.statusDetail}
+            </span>
+        {:else if vaultStore.openError}
+            <span class="max-w-96 truncate text-red-400 opacity-80" title={vaultStore.openError}>
+                {vaultStore.openError}
+            </span>
+        {/if}
     </div>
 </footer>

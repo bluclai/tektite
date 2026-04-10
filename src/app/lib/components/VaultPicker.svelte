@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { open as openDialog } from '@tauri-apps/plugin-dialog';
-    import { openVault, getRecentVaults, type VaultEntry } from '$lib/stores/vault.svelte';
+    import { openVault, getRecentVaults, vaultStore, type VaultEntry } from '$lib/stores/vault.svelte';
 
     let recentVaults = $state<VaultEntry[]>([]);
     let isOpening = $state(false);
@@ -14,13 +14,25 @@
         const selected = await openDialog({ directory: true, multiple: false });
         if (typeof selected === 'string' && selected) {
             isOpening = true;
-            await openVault(selected);
+            try {
+                await openVault(selected);
+            } catch {
+                // vaultStore.openError surfaces the failure in the picker + status bar.
+            } finally {
+                isOpening = false;
+            }
         }
     }
 
     async function selectRecent(entry: VaultEntry) {
         isOpening = true;
-        await openVault(entry.path);
+        try {
+            await openVault(entry.path);
+        } catch {
+            // vaultStore.openError surfaces the failure in the picker + status bar.
+        } finally {
+            isOpening = false;
+        }
     }
 </script>
 
@@ -36,6 +48,12 @@
         <p class="text-center text-sm text-on-surface-variant">
             Choose a folder to open as your vault
         </p>
+
+        {#if vaultStore.openError}
+            <p class="w-full rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+                {vaultStore.openError}
+            </p>
+        {/if}
 
         <button
             class="btn btn-primary w-full px-4 py-2.5 text-sm disabled:opacity-50"

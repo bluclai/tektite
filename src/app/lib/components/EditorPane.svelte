@@ -6,7 +6,7 @@
      *   1. On mount: create EditorView, load file content via editor_read_file.
      *   2. On document change: schedule autosave (1.5 s debounce).
      *   3. Ctrl+S / Cmd+S: flush immediately.
-     *   4. On destroy (tab switch / close): cancel pending timer, destroy view.
+     *   4. On destroy (tab switch / close): flush any pending autosave, destroy view.
      *
      * Extension compartments are exported so later phases (wiki-link syntax,
      * live preview, autocomplete) can reconfigure them without rebuilding the
@@ -88,14 +88,34 @@
     const AUTOSAVE_DELAY_MS = 1500;
 
     let lastSavedContent = $state('');
+    let loadError = $state<string | null>(null);
 
     // Phase 10: external change conflict banner (non-modal).
     let externalBannerOpen = $state(false);
     let externalConflict = $state(false);
     let externalContentSnapshot = $state<string | null>(null);
 
-    async function saveFile(content: string): Promise<void> {
-        editorStore.setSaveState('saving');
+    function formatCommandError(error: unknown, fallback: string): string {
+        if (error instanceof Error && error.message.trim().length > 0) {
+            return error.message;
+        }
+
+        if (typeof error === 'string' && error.trim().length > 0) {
+            return error;
+        }
+
+        return fallback;
+    }
+
+    async function saveFile(content: string, reason: 'autosave' | 'manual' | 'teardown' = 'autosave'): Promise<void> {
+        const savingDetail =
+            reason === 'manual'
+                ? 'Saving file…'
+                : reason === 'teardown'
+                    ? 'Saving pending changes before closing…'
+                    : 'Autosaving…';
+
+        editorStore.setSaveState('saving', { detail: savingDetail, target: path });
         try {
             await invoke<void>('editor_write_file', { path, content });
             lastSavedContent = content;
@@ -104,14 +124,18 @@
                 externalConflict = false;
                 externalContentSnapshot = null;
             }
-            editorStore.setSaveState('saved');
-        } catch {
-            editorStore.setSaveState('error');
+            const successDetail = reason === 'manual' ? 'Saved' : 'Autosave complete';
+            editorStore.setSaveState('saved', { detail: successDetail, target: path });
+        } catch (error) {
+            editorStore.setSaveState('error', {
+                detail: formatCommandError(error, 'Failed to save file.'),
+                target: path,
+            });
         }
     }
 
     function scheduleAutosave(content: string) {
-        editorStore.setSaveState('unsaved');
+        editorStore.setSaveState('unsaved', { detail: 'Waiting to autosave…', target: path });
         if (autosaveTimer !== null) clearTimeout(autosaveTimer);
         autosaveTimer = setTimeout(() => {
             autosaveTimer = null;
@@ -125,8 +149,27 @@
             autosaveTimer = null;
         }
         if (view) {
-            void saveFile(view.state.doc.toString());
+            const content = view.state.doc.toString();
+            if (content === lastSavedContent) {
+                editorStore.setSaveState('saved', { detail: 'No changes to save', target: path });
+                return;
+            }
+            void saveFile(content, 'manual');
         }
+    }
+
+    function flushPendingAutosaveOnTeardown() {
+        if (autosaveTimer !== null) {
+            clearTimeout(autosaveTimer);
+            autosaveTimer = null;
+        }
+
+        if (!view) return;
+
+        const content = view.state.doc.toString();
+        if (content === lastSavedContent) return;
+
+        void saveFile(content, 'teardown');
     }
 
     function relativePathForCurrentFile(): string {
@@ -143,7 +186,11 @@
         let diskContent = '';
         try {
             diskContent = await invoke<string>('editor_read_file', { path });
-        } catch {
+        } catch (error) {
+            editorStore.setSaveState('error', {
+                detail: formatCommandError(error, 'Failed to reload file from disk.'),
+                target: path,
+            });
             return;
         }
 
@@ -278,12 +325,15 @@
             try {
                 initialContent = await invoke<string>('editor_read_file', { path });
                 lastSavedContent = initialContent;
-                editorStore.setSaveState('saved');
-            } catch {
-                editorStore.setSaveState('error');
+                loadError = null;
+                editorStore.setSaveState('saved', { detail: 'File opened', target: path });
+            } catch (error) {
+                loadError = formatCommandError(error, 'Failed to open file.');
+                editorStore.setSaveState('error', { detail: loadError, target: path });
             }
 
             if (destroyed) return;
+            if (loadError !== null) return;
 
             const state = EditorState.create({
                 doc: initialContent,
@@ -338,12 +388,7 @@
 
         return () => {
             destroyed = true;
-            // Cancel any pending autosave — don't flush; the user navigated away
-            // and the last explicit save / last autosave is the authoritative state.
-            if (autosaveTimer !== null) {
-                clearTimeout(autosaveTimer);
-                autosaveTimer = null;
-            }
+            flushPendingAutosaveOnTeardown();
             unlistenExternal?.();
             view?.destroy();
             view = null;
@@ -363,6 +408,12 @@
     overflow-hidden prevents double scrollbars — CM6 manages its own scroll.
 -->
 <div class="relative h-full w-full overflow-hidden" aria-label="Editor">
+    {#if loadError}
+        <div class="absolute inset-x-4 top-4 z-20 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200 shadow-[0_12px_32px_rgba(0,0,0,0.22)]">
+            Couldn’t open this file: {loadError}
+        </div>
+    {/if}
+
     {#if externalBannerOpen}
         <div class="absolute top-2 left-1/2 z-20 w-[min(860px,calc(100%-2rem))] -translate-x-1/2 rounded-md bg-surface-container-high/95 px-3 py-2 backdrop-blur-md shadow-[0_12px_32px_rgba(0,0,0,0.22)]">
             <div class="flex items-center gap-2 text-xs text-on-surface-variant">

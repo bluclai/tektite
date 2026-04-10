@@ -507,3 +507,35 @@ fn existing_ancestor(path: &Path) -> &Path {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Vault, VaultError};
+
+    #[test]
+    fn read_and_write_file_round_trip_inside_vault() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vault = Vault::open(dir.path()).expect("open vault");
+
+        vault
+            .write_file("notes/today.md", "hello from tektite")
+            .expect("write inside vault");
+
+        let content = vault
+            .read_file("notes/today.md")
+            .expect("read inside vault");
+        assert_eq!(content, "hello from tektite");
+    }
+
+    #[test]
+    fn write_file_rejects_paths_outside_vault_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vault = Vault::open(dir.path()).expect("open vault");
+
+        let err = vault
+            .write_file("../escape.md", "nope")
+            .expect_err("outside-root write should fail");
+
+        assert!(matches!(err, VaultError::OutsideRoot));
+    }
+}

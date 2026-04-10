@@ -605,7 +605,6 @@ export async function wikiLinkCompletionSource(
 const primary = "#bdc2ff";
 const onSurfaceVariant = "#c9c7cc";
 const outlineVariant = "#49474e";
-const outline = "#9391a0";
 
 export const wikiLinkTheme = EditorView.theme({
   // De-emphasised brackets [[ and ]]

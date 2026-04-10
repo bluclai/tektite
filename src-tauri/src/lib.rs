@@ -175,7 +175,7 @@ fn vault_open(
 
 #[tauri::command]
 fn editor_read_file(path: String) -> Result<String, String> {
-    fs::read_to_string(&path).map_err(|e| e.to_string())
+    fs::read_to_string(&path).map_err(|e| format!("Failed to open {path}: {e}"))
 }
 
 /// Writes file content and immediately updates the index.
@@ -196,12 +196,14 @@ fn editor_write_file(
     let abs = PathBuf::from(&path);
     let rel = abs
         .strip_prefix(&vault.root)
-        .map_err(|_| "Path is outside vault root".to_string())?
+        .map_err(|_| format!("Cannot save outside the open vault: {path}"))?
         .to_string_lossy()
         .replace('\\', "/");
 
     // Write through the vault (registers write tokens for watcher suppression).
-    vault.write_file(&rel, &content).map_err(ve)?;
+    vault
+        .write_file(&rel, &content)
+        .map_err(|e| format!("Failed to save {rel}: {}", ve(e)))?;
 
     // Immediately re-index so backlinks and link resolution are current.
     if let Some(index) = vault.index.as_mut() {
