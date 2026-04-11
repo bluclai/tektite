@@ -6,11 +6,11 @@
      *   1. On mount: create EditorView, load file content via editor_read_file.
      *   2. On document change: schedule autosave (1.5 s debounce).
      *   3. Ctrl+S / Cmd+S: flush immediately.
-     *   4. On destroy (tab switch / close): cancel pending timer, destroy view.
+     *   4. On destroy (tab switch / close): flush any pending autosave, destroy view.
      *
-     * Extension compartments are exported so later phases (wiki-link syntax,
-     * live preview, autocomplete) can reconfigure them without rebuilding the
-     * base stack.
+     * The wiki-link syntax/decorations and autocomplete source are wired in
+     * after construction via dedicated compartments so they can be reconfigured
+     * without rebuilding the base extension stack.
      */
 
     import { onMount } from 'svelte';
@@ -26,7 +26,6 @@
 
     import { clayTheme } from '$lib/editor/theme';
     import { wikiLinkExtension, wikiLinkAutocomplete } from '$lib/editor/wiki-link';
-    import { livePreviewExtension } from '$lib/editor/live-preview';
     import { editorStore } from '$lib/stores/editor.svelte';
     import { vaultStore } from '$lib/stores/vault.svelte';
     import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -39,11 +38,9 @@
     interface Props {
         /** Absolute filesystem path — passed directly to read/write commands. */
         path: string;
-        /** Explicit reactive preview-mode prop from parent pane. */
-        previewMode?: boolean;
     }
 
-    let { path, previewMode = false }: Props = $props();
+    let { path }: Props = $props();
 
     // ---------------------------------------------------------------------------
     // DOM ref
@@ -52,7 +49,8 @@
     let containerEl = $state<HTMLDivElement | null>(null);
 
     // ---------------------------------------------------------------------------
-    // Ambiguous link dialog state (Phase 9)
+    // Ambiguous link dialog state — opened when wiki-link resolution finds
+    // multiple candidates and the user needs to disambiguate.
     // ---------------------------------------------------------------------------
 
     let ambiguousOpen = $state(false);
@@ -60,18 +58,15 @@
     let ambiguousPaths = $state<string[]>([]);
 
     // ---------------------------------------------------------------------------
-    // Compartments — reconfigurable extension slots for future phases.
-    // Each compartment wraps a single extension group that can be swapped
-    // without reconstructing the full EditorState.
+    // Compartments — reconfigurable extension slots. Each compartment wraps a
+    // single extension group that can be swapped without reconstructing the
+    // full EditorState.
     // ---------------------------------------------------------------------------
 
-    /** Slot for wiki-link syntax + decorations (Phase 7). */
+    /** Slot for wiki-link syntax + decorations. */
     export const wikiLinkCompartment = new Compartment();
 
-    /** Slot for live preview decorations (Phase 10). */
-    export const livePreviewCompartment = new Compartment();
-
-    /** Slot for autocomplete sources (Phase 7+). */
+    /** Slot for autocomplete sources. */
     export const autocompleteCompartment = new Compartment();
 
     // ---------------------------------------------------------------------------
@@ -88,14 +83,35 @@
     const AUTOSAVE_DELAY_MS = 1500;
 
     let lastSavedContent = $state('');
+    let loadError = $state<string | null>(null);
 
-    // Phase 10: external change conflict banner (non-modal).
+    // External change conflict banner (non-modal) — surfaces when the file
+    // changes on disk while the editor has it open.
     let externalBannerOpen = $state(false);
     let externalConflict = $state(false);
     let externalContentSnapshot = $state<string | null>(null);
 
-    async function saveFile(content: string): Promise<void> {
-        editorStore.setSaveState('saving');
+    function formatCommandError(error: unknown, fallback: string): string {
+        if (error instanceof Error && error.message.trim().length > 0) {
+            return error.message;
+        }
+
+        if (typeof error === 'string' && error.trim().length > 0) {
+            return error;
+        }
+
+        return fallback;
+    }
+
+    async function saveFile(content: string, reason: 'autosave' | 'manual' | 'teardown' = 'autosave'): Promise<void> {
+        const savingDetail =
+            reason === 'manual'
+                ? 'Saving file…'
+                : reason === 'teardown'
+                    ? 'Saving pending changes before closing…'
+                    : 'Autosaving…';
+
+        editorStore.setSaveState('saving', { detail: savingDetail, target: path });
         try {
             await invoke<void>('editor_write_file', { path, content });
             lastSavedContent = content;
@@ -104,14 +120,18 @@
                 externalConflict = false;
                 externalContentSnapshot = null;
             }
-            editorStore.setSaveState('saved');
-        } catch {
-            editorStore.setSaveState('error');
+            const successDetail = reason === 'manual' ? 'Saved' : 'Autosave complete';
+            editorStore.setSaveState('saved', { detail: successDetail, target: path });
+        } catch (error) {
+            editorStore.setSaveState('error', {
+                detail: formatCommandError(error, 'Failed to save file.'),
+                target: path,
+            });
         }
     }
 
     function scheduleAutosave(content: string) {
-        editorStore.setSaveState('unsaved');
+        editorStore.setSaveState('unsaved', { detail: 'Waiting to autosave…', target: path });
         if (autosaveTimer !== null) clearTimeout(autosaveTimer);
         autosaveTimer = setTimeout(() => {
             autosaveTimer = null;
@@ -125,8 +145,27 @@
             autosaveTimer = null;
         }
         if (view) {
-            void saveFile(view.state.doc.toString());
+            const content = view.state.doc.toString();
+            if (content === lastSavedContent) {
+                editorStore.setSaveState('saved', { detail: 'No changes to save', target: path });
+                return;
+            }
+            void saveFile(content, 'manual');
         }
+    }
+
+    function flushPendingAutosaveOnTeardown() {
+        if (autosaveTimer !== null) {
+            clearTimeout(autosaveTimer);
+            autosaveTimer = null;
+        }
+
+        if (!view) return;
+
+        const content = view.state.doc.toString();
+        if (content === lastSavedContent) return;
+
+        void saveFile(content, 'teardown');
     }
 
     function relativePathForCurrentFile(): string {
@@ -143,7 +182,11 @@
         let diskContent = '';
         try {
             diskContent = await invoke<string>('editor_read_file', { path });
-        } catch {
+        } catch (error) {
+            editorStore.setSaveState('error', {
+                detail: formatCommandError(error, 'Failed to reload file from disk.'),
+                target: path,
+            });
             return;
         }
 
@@ -227,7 +270,7 @@
             // --- Theme (static — Clay design system tokens) ---
             clayTheme,
 
-            // --- Syntax: markdown (embedded language highlighting added in Phase 7+) ---
+            // --- Syntax: markdown ---
             markdown({
                 base: markdownLanguage,
                 addKeymap: true,
@@ -253,9 +296,8 @@
             // Save keybinding (Mod-s) — before the default keymap
             saveKeymap,
 
-            // --- Future compartments (start empty) ---
+            // --- Reconfigurable compartments (start empty) ---
             wikiLinkCompartment.of([]),
-            livePreviewCompartment.of([]),
             autocompleteCompartment.of([autocompletion()]),
 
             // --- Save listener ---
@@ -278,12 +320,15 @@
             try {
                 initialContent = await invoke<string>('editor_read_file', { path });
                 lastSavedContent = initialContent;
-                editorStore.setSaveState('saved');
-            } catch {
-                editorStore.setSaveState('error');
+                loadError = null;
+                editorStore.setSaveState('saved', { detail: 'File opened', target: path });
+            } catch (error) {
+                loadError = formatCommandError(error, 'Failed to open file.');
+                editorStore.setSaveState('error', { detail: loadError, target: path });
             }
 
             if (destroyed) return;
+            if (loadError !== null) return;
 
             const state = EditorState.create({
                 doc: initialContent,
@@ -319,9 +364,6 @@
                             },
                         }),
                     ),
-                    livePreviewCompartment.reconfigure(
-                        previewMode ? livePreviewExtension() : [],
-                    ),
                     autocompleteCompartment.reconfigure(wikiLinkAutocomplete()),
                 ],
             });
@@ -338,12 +380,7 @@
 
         return () => {
             destroyed = true;
-            // Cancel any pending autosave — don't flush; the user navigated away
-            // and the last explicit save / last autosave is the authoritative state.
-            if (autosaveTimer !== null) {
-                clearTimeout(autosaveTimer);
-                autosaveTimer = null;
-            }
+            flushPendingAutosaveOnTeardown();
             unlistenExternal?.();
             view?.destroy();
             view = null;
@@ -351,10 +388,8 @@
     });
 
     // ---------------------------------------------------------------------------
-    // Reactive: path and preview mode changes are handled by the parent keying
-    // this component on both active tab ID and preview mode. We intentionally
-    // remount the editor on preview toggle because it's the smallest reliable
-    // path and avoids subtle CM6 reconfigure failures.
+    // Reactive: path changes are handled by the parent keying this component
+    // on the active tab ID, giving each tab its own EditorView instance.
     // ---------------------------------------------------------------------------
 </script>
 
@@ -363,6 +398,12 @@
     overflow-hidden prevents double scrollbars — CM6 manages its own scroll.
 -->
 <div class="relative h-full w-full overflow-hidden" aria-label="Editor">
+    {#if loadError}
+        <div class="absolute inset-x-4 top-4 z-20 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200 shadow-[0_12px_32px_rgba(0,0,0,0.22)]">
+            Couldn’t open this file: {loadError}
+        </div>
+    {/if}
+
     {#if externalBannerOpen}
         <div class="absolute top-2 left-1/2 z-20 w-[min(860px,calc(100%-2rem))] -translate-x-1/2 rounded-md bg-surface-container-high/95 px-3 py-2 backdrop-blur-md shadow-[0_12px_32px_rgba(0,0,0,0.22)]">
             <div class="flex items-center gap-2 text-xs text-on-surface-variant">
@@ -396,7 +437,7 @@
     <div bind:this={containerEl} class="h-full w-full overflow-hidden"></div>
 </div>
 
-<!-- Ambiguous link disambiguation dialog (Phase 9) -->
+<!-- Ambiguous link disambiguation dialog -->
 <AmbiguousLinkDialog
     bind:open={ambiguousOpen}
     target={ambiguousTarget}

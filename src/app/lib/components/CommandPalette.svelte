@@ -10,13 +10,6 @@
 		score: number;
 	}
 
-	interface HeadingSearchRow {
-		file_id: string;
-		file_path: string;
-		level: number;
-		text: string;
-	}
-
 	interface CommandAction {
 		id: string;
 		label: string;
@@ -28,8 +21,6 @@
 
 	let query = $state('');
 	let fileResults = $state<FuzzyFileRow[]>([]);
-	let headingResults = $state<HeadingSearchRow[]>([]);
-	let loading = $state(false);
 
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 	const DEBOUNCE_MS = 100;
@@ -40,12 +31,6 @@
 			label: 'Toggle Sidebar',
 			shortcut: '⌘B',
 			action: () => workspaceStore.toggleSidebar(),
-		},
-		{
-			id: 'toggle-preview',
-			label: 'Toggle Preview Mode',
-			shortcut: '⌘⇧L',
-			action: () => workspaceStore.togglePreviewMode(),
 		},
 		{
 			id: 'panel-files',
@@ -65,9 +50,7 @@
 	];
 
 	// Detect mode from query prefix
-	const mode = $derived(
-		query.startsWith('>') ? 'commands' : query.startsWith('#') ? 'headings' : 'files'
-	);
+	const mode = $derived(query.startsWith('>') ? 'commands' : 'files');
 
 	// Extract search term (remove prefix)
 	const searchTerm = $derived(mode === 'files' ? query : query.slice(1).trimStart());
@@ -83,9 +66,7 @@
 	const modePlaceholder = $derived(
 		mode === 'commands'
 			? 'Type a command...'
-			: mode === 'headings'
-				? 'Search headings...'
-				: 'Search files...'
+			: 'Search files...'
 	);
 
 	// Debounced search
@@ -95,48 +76,42 @@
 		// Clear results for empty search
 		if (!searchTerm.trim()) {
 			fileResults = [];
-			headingResults = [];
 			return;
 		}
 
-		// Only search in files or headings mode
+		// Only search in files mode.
 		if (mode === 'commands') return;
 
 		debounceTimer = setTimeout(async () => {
 			// Don't search if vault not open
 			if (!vaultStore.path) {
 				fileResults = [];
-				headingResults = [];
 				return;
 			}
 
-			loading = true;
 			try {
-				if (mode === 'files') {
-					const rows = await invoke<FuzzyFileRow[]>('search_fuzzy_files', {
-						query: searchTerm,
-						limit: 20,
-					});
-					fileResults = rows;
-				} else if (mode === 'headings') {
-					const rows = await invoke<HeadingSearchRow[]>('search_headings', {
-						query: searchTerm,
-						limit: 20,
-					});
-					headingResults = rows;
-				}
+				const rows = await invoke<FuzzyFileRow[]>('search_fuzzy_files', {
+					query: searchTerm,
+					limit: 20,
+				});
+				fileResults = rows;
 			} catch (e) {
 				console.error('Search error:', e);
 				fileResults = [];
-				headingResults = [];
-			} finally {
-				loading = false;
 			}
 		}, DEBOUNCE_MS);
 	});
 
+	function toAbsolutePath(path: string): string {
+		if (!vaultStore.path || path.startsWith(vaultStore.path)) {
+			return path;
+		}
+
+		return `${vaultStore.path}/${path}`;
+	}
+
 	function openFile(path: string) {
-		workspaceStore.openTab(path);
+		workspaceStore.openTab(toAbsolutePath(path));
 		open = false;
 		query = '';
 	}
@@ -147,13 +122,6 @@
 		query = '';
 	}
 
-	function getFileName(path: string): string {
-		return path.split('/').pop() ?? path;
-	}
-
-	function getLevelIndicator(level: number): string {
-		return '#'.repeat(level);
-	}
 </script>
 
 <Command.Dialog {open} title="Command Palette" description="" shouldFilter={false}>
@@ -195,29 +163,6 @@
 									{#if cmd.shortcut}
 										<Command.Shortcut>{cmd.shortcut}</Command.Shortcut>
 									{/if}
-								</div>
-							</Command.Item>
-						{/each}
-					</Command.Group>
-				{/if}
-			{:else}
-				<!-- Headings mode -->
-				{#if headingResults.length === 0}
-					{#if searchTerm.trim()}
-						<Command.Empty>No headings found.</Command.Empty>
-					{:else}
-						<Command.Empty>Type to search headings...</Command.Empty>
-					{/if}
-				{:else}
-					<Command.Group heading="Headings">
-						{#each headingResults as heading (heading.file_id + heading.text)}
-							<Command.Item onSelect={() => openFile(heading.file_path)}>
-								<div class="flex flex-1 items-center gap-2">
-									<span class="text-xs text-on-surface-variant/50">{getLevelIndicator(heading.level)}</span>
-									<div class="flex-1">
-										<div class="text-sm">{heading.text}</div>
-										<div class="text-xs text-on-surface-variant/50">{heading.file_path}</div>
-									</div>
 								</div>
 							</Command.Item>
 						{/each}

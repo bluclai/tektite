@@ -1,5 +1,6 @@
 <script lang="ts">
     import { type Snippet } from "svelte";
+    import { getCurrentWindow } from "@tauri-apps/api/window";
     import Titlebar from "$lib/components/Titlebar.svelte";
     import ActivityBar from "$lib/components/ActivityBar.svelte";
     import Sidebar from "$lib/components/Sidebar.svelte";
@@ -13,6 +14,21 @@
 
     let { children }: Props = $props();
     let commandPaletteOpen = $state(false);
+
+    const titlebarTitle = $derived.by(() => {
+        const p = workspaceStore.activeFilePath;
+        if (!p) return '';
+        return p.split('/').pop()?.replace(/\.md$/i, '') ?? '';
+    });
+
+    // Sync the OS window title (alt-tab / taskbar / dock) to the active file
+    // so the app behaves like other native editors. The custom in-app titlebar
+    // shows the same value via the `title` prop below.
+    const win = getCurrentWindow();
+    $effect(() => {
+        const t = titlebarTitle ? `${titlebarTitle} — Tektite` : 'Tektite';
+        void win.setTitle(t);
+    });
 
     function onKeydown(e: KeyboardEvent) {
         // Ctrl+K / Cmd+K — open/close command palette
@@ -33,20 +49,13 @@
             workspaceStore.splitPane(workspaceStore.activePaneId, "horizontal");
             return;
         }
-
-        // Ctrl+Shift+L / Cmd+Shift+L — toggle source/live preview mode
-        if (e.key.toLowerCase() === "l" && (e.ctrlKey || e.metaKey) && e.shiftKey) {
-            e.preventDefault();
-            workspaceStore.togglePreviewMode();
-            return;
-        }
     }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
 
 <div class="flex h-full flex-col overflow-hidden">
-    <Titlebar />
+    <Titlebar title={titlebarTitle} />
     <div class="flex flex-1 overflow-hidden">
         <ActivityBar />
         <Sidebar />

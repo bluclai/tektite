@@ -1,16 +1,16 @@
-//! Link resolution with proximity-based tiebreaking.
+//! Link resolution with explicit, safe wiki-link semantics.
 //!
 //! Resolution order:
-//! 1. Filename stem (case-insensitive)
-//! 2. Frontmatter alias (case-insensitive, via `aliases` table)
-//! 3. Path-qualified target (case-insensitive)
+//! 1. Path-qualified target (case-insensitive exact path match)
+//! 2. Filename stem (case-insensitive)
+//! 3. Frontmatter alias (case-insensitive, via `aliases` table)
 //!
-//! At each tier, exactly 1 match resolves. 0 or 2+ falls through to the next
-//! tier. After all tiers fail the link is `Unresolved`.
+//! Explicit path-qualified links never fall back to stem or alias matching.
+//! If `[[folder/note]]` does not match `folder/note.md` exactly, it remains
+//! unresolved instead of silently jumping to another note.
 //!
-//! Proximity tiebreaking (on by default): when multiple candidates exist at
-//! the same tier, the candidate with the shortest path relative to the
-//! source file wins. Disable via [`Index::proximity_enabled`].
+//! At each tier, exactly 1 match resolves. Multiple matches remain ambiguous
+//! unless proximity tiebreaking is explicitly enabled.
 
 use rusqlite::params;
 
@@ -39,15 +39,26 @@ impl Index {
     /// Resolve a wiki-link `target` string to a [`LinkResolution`].
     ///
     /// `source_path` is the vault-relative path of the file containing the
-    /// link. It is used for proximity tiebreaking and may be `None` (in which
-    /// case proximity has no effect).
+    /// link. It is used for optional proximity tiebreaking and may be `None`
+    /// (in which case proximity has no effect).
     pub fn resolve_link(
         &self,
         target: &str,
         source_path: Option<&str>,
     ) -> Result<LinkResolution, IndexError> {
-        // Strip path qualifier to get the stem for tier-1 and tier-2 checks.
-        let stem = stem_from_target(target);
+        let normalized_target = target.trim();
+
+        // Explicit path-qualified targets preserve user intent and never fall
+        // back to stem/alias heuristics.
+        if normalized_target.contains('/') {
+            let path_matches = self.files_by_link_target_path(normalized_target)?;
+            return Ok(self
+                .resolve_candidates(path_matches, source_path)
+                .unwrap_or(LinkResolution::Unresolved));
+        }
+
+        // Strip path qualifier to get the stem for filename and alias checks.
+        let stem = stem_from_target(normalized_target);
 
         // Tier 1: filename stem.
         let stem_matches = self.files_by_stem(stem)?;
@@ -59,15 +70,6 @@ impl Index {
         let alias_matches = self.files_by_alias(stem)?;
         if let Some(res) = self.resolve_candidates(alias_matches, source_path) {
             return Ok(res);
-        }
-
-        // Tier 3: path-qualified (case-insensitive).
-        // Only attempt this if the target looks path-qualified (contains '/').
-        if target.contains('/') {
-            let path_matches = self.files_by_path_prefix(target)?;
-            if let Some(res) = self.resolve_candidates(path_matches, source_path) {
-                return Ok(res);
-            }
         }
 
         Ok(LinkResolution::Unresolved)

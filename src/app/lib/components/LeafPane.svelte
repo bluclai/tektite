@@ -16,9 +16,15 @@
 
 	const activeTab = $derived(pane.tabs.find((t) => t.id === pane.activeTabId) ?? null);
 
-	const absolutePath = $derived(
-		activeTab && vaultStore.path ? `${vaultStore.path}/${activeTab.path}` : null,
-	);
+	const absolutePath = $derived.by(() => {
+		if (!activeTab) return null;
+
+		const tabPath = activeTab.path;
+		const vaultRoot = vaultStore.path;
+		if (!vaultRoot) return tabPath;
+
+		return tabPath.startsWith(vaultRoot + '/') ? tabPath : `${vaultRoot}/${tabPath}`;
+	});
 
 	function onSplitRight() {
 		workspaceStore.splitPane(pane.id, 'horizontal');
@@ -58,8 +64,8 @@
 				Key on the tab ID so EditorPane is destroyed + recreated on tab switch
 				giving each tab its own CM6 EditorView and independent undo history.
 			-->
-			{#key `${pane.activeTabId ?? 'none'}:${workspaceStore.previewMode ? 'preview' : 'source'}`}
-				<EditorPane path={absolutePath} previewMode={workspaceStore.previewMode} />
+			{#key pane.activeTabId ?? 'none'}
+				<EditorPane path={absolutePath} />
 			{/key}
 		{/if}
 	</div>

@@ -17,21 +17,35 @@
     });
 
     async function selectRecent(entry: VaultEntry) {
-        await openVault(entry.path);
-        onclose?.();
+        try {
+            await openVault(entry.path);
+            onclose?.();
+        } catch {
+            // vaultStore.openError surfaces the failure in the popover + status bar.
+        }
     }
 
     async function pickFolder() {
         const selected = await openDialog({ directory: true, multiple: false });
         if (typeof selected === 'string' && selected) {
-            await openVault(selected);
-            onclose?.();
+            try {
+                await openVault(selected);
+                onclose?.();
+            } catch {
+                // vaultStore.openError surfaces the failure in the popover + status bar.
+            }
         }
     }
 </script>
 
 <div class="flex w-[280px] flex-col gap-1 rounded-lg bg-surface-container-highest p-3">
     <p class="label-lg mb-1 px-2 py-1 text-on-surface-variant opacity-60">Vaults</p>
+
+    {#if vaultStore.openError}
+        <p class="mb-2 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-2 text-xs text-red-200">
+            {vaultStore.openError}
+        </p>
+    {/if}
 
     {#if recentVaults.length > 0}
         <ul class="flex flex-col">

@@ -349,7 +349,6 @@ fn resolve_link_is_unresolved_for_unknown_target() {
 #[test]
 fn resolve_link_returns_ambiguous_when_multiple_stems_and_no_source() {
     let mut idx = Index::open_in_memory().unwrap();
-    idx.proximity_enabled = false;
     ingest(&mut idx, "a/note.md", "# A\n");
     ingest(&mut idx, "b/note.md", "# B\n");
     let result = idx.resolve_link("note", None).unwrap();
@@ -357,11 +356,20 @@ fn resolve_link_returns_ambiguous_when_multiple_stems_and_no_source() {
 }
 
 #[test]
-fn resolve_link_uses_proximity_to_break_tie() {
+fn resolve_link_keeps_multiple_stems_ambiguous_by_default_even_with_source_path() {
     let mut idx = Index::open_in_memory().unwrap();
+    ingest(&mut idx, "notes/note.md", "# Close\n");
+    ingest(&mut idx, "other/note.md", "# Far\n");
+    let result = idx.resolve_link("note", Some("notes/source.md")).unwrap();
+    assert!(matches!(result, LinkResolution::Ambiguous(_)));
+}
+
+#[test]
+fn resolve_link_can_use_proximity_when_explicitly_enabled() {
+    let mut idx = Index::open_in_memory().unwrap();
+    idx.proximity_enabled = true;
     let id_close = ingest(&mut idx, "notes/note.md", "# Close\n");
     let _id_far = ingest(&mut idx, "other/note.md", "# Far\n");
-    // Source is in "notes/" — "notes/note.md" is closer.
     let result = idx.resolve_link("note", Some("notes/source.md")).unwrap();
     assert_eq!(result, LinkResolution::Resolved(id_close));
 }
@@ -380,6 +388,22 @@ fn resolve_link_path_qualified_case_insensitive() {
     let id = ingest(&mut idx, "Folder/Note.md", "# Note\n");
     let result = idx.resolve_link("folder/note", None).unwrap();
     assert_eq!(result, LinkResolution::Resolved(id));
+}
+
+#[test]
+fn resolve_link_path_qualified_does_not_fall_back_to_plain_stem_match() {
+    let mut idx = Index::open_in_memory().unwrap();
+    ingest(&mut idx, "note.md", "# Plain\n");
+    let result = idx.resolve_link("missing/note", None).unwrap();
+    assert_eq!(result, LinkResolution::Unresolved);
+}
+
+#[test]
+fn resolve_link_path_qualified_requires_exact_path_not_prefix_match() {
+    let mut idx = Index::open_in_memory().unwrap();
+    ingest(&mut idx, "folder/note-long.md", "# Long\n");
+    let result = idx.resolve_link("folder/note", None).unwrap();
+    assert_eq!(result, LinkResolution::Unresolved);
 }
 
 // ---------------------------------------------------------------------------
@@ -621,7 +645,10 @@ fn rename_skips_alias_based_links() {
     let alias_edit = p.edits.iter().find(|e| e.before == "[[MyAlias]]");
     let stem_edit = p.edits.iter().find(|e| e.before == "[[note]]");
 
-    assert!(alias_edit.is_none(), "alias-based links must not be rewritten");
+    assert!(
+        alias_edit.is_none(),
+        "alias-based links must not be rewritten"
+    );
     assert!(stem_edit.is_some(), "stem-based link must be rewritten");
     assert_eq!(stem_edit.unwrap().after, "[[renamed]]");
 }
@@ -684,16 +711,16 @@ fn apply_rename_index_updates_path_and_resolves_links() {
     let source_id = ingest(&mut idx, "notes/source.md", "[[old]].\n");
 
     let links = idx.get_links(&source_id).unwrap();
-    assert_eq!(links[0].resolved_target_id.as_deref(), Some(target_id.as_str()));
+    assert_eq!(
+        links[0].resolved_target_id.as_deref(),
+        Some(target_id.as_str())
+    );
 
     let plan = idx.plan_rename("notes/old.md", "notes/new.md").unwrap();
 
     // The source file's content after applying the edit.
-    let new_source_content = tektite_index::rewrite_content(
-        "[[old]].\n",
-        "notes/source.md",
-        &plan.edits,
-    );
+    let new_source_content =
+        tektite_index::rewrite_content("[[old]].\n", "notes/source.md", &plan.edits);
     assert_eq!(new_source_content, "[[new]].\n");
 
     idx.apply_rename_index(
@@ -716,7 +743,10 @@ fn apply_rename_index_updates_path_and_resolves_links() {
 
     // Source link must resolve to the renamed file at its new path.
     let links_after = idx.get_links(&source_id).unwrap();
-    assert_eq!(links_after[0].resolved_target_id.as_deref(), Some(new_id.as_str()));
+    assert_eq!(
+        links_after[0].resolved_target_id.as_deref(),
+        Some(new_id.as_str())
+    );
 }
 
 #[test]
@@ -736,8 +766,14 @@ fn directory_rename_plan_covers_all_files() {
     // Path-qualified links need rewriting; files with only stem links do not.
     let files_edited: std::collections::HashSet<&str> =
         p.edits.iter().map(|e| e.file_path.as_str()).collect();
-    assert!(files_edited.contains("src/s1.md"), "s1 has [[notes/a]] which must be rewritten");
-    assert!(files_edited.contains("src/s2.md"), "s2 has [[notes/c]] which must be rewritten");
+    assert!(
+        files_edited.contains("src/s1.md"),
+        "s1 has [[notes/a]] which must be rewritten"
+    );
+    assert!(
+        files_edited.contains("src/s2.md"),
+        "s2 has [[notes/c]] which must be rewritten"
+    );
 
     // Verify the path-qualified rewrites.
     let edit_a = p.edits.iter().find(|e| e.before == "[[notes/a]]").unwrap();

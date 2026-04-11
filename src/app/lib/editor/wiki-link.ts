@@ -10,12 +10,11 @@
  *      unresolved links get a distinct muted treatment; ambiguous links are
  *      flagged separately.
  *   3. Autocomplete — typing `[[` triggers a suggestion list sourced from the
- *      vault index. Selecting a suggestion inserts the full `[[note]]` text.
- *      After a `#` inside a wiki-link, headings from the target file are
- *      suggested.
- *   4. Link following — clicking a wiki-link (or Alt+Enter with cursor inside
- *      one) opens the target note in the active pane. Ambiguous links trigger
- *      a disambiguation dialog rather than a blind open.
+ *      vault index. Suggestions prefer stable inserts: unique note names insert
+ *      `[[note]]`, while duplicate filenames insert path-qualified links.
+ *   4. Link following — Ctrl/Cmd-clicking a wiki-link (or Alt+Enter with the
+ *      cursor inside one) opens the target note in the active pane. Ambiguous
+ *      links trigger a disambiguation dialog rather than a blind open.
  *
  * The extension is structured as a single `Extension` export so it can be
  * dropped into the `wikiLinkCompartment` in EditorPane without restructuring
@@ -36,6 +35,7 @@ import { autocompletion, CompletionContext } from "@codemirror/autocomplete";
 import { StateField, StateEffect, RangeSetBuilder } from "@codemirror/state";
 import { EditorView, Decoration, ViewPlugin, ViewUpdate, keymap } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
+import { filesStore } from "$lib/stores/files.svelte";
 
 // ---------------------------------------------------------------------------
 // IPC types (mirrors Rust LinkResolutionResult + index commands)
@@ -44,11 +44,6 @@ import { invoke } from "@tauri-apps/api/core";
 export interface FileCompletionEntry {
   path: string;
   name: string;
-}
-
-export interface HeadingCompletionEntry {
-  level: number;
-  text: string;
 }
 
 export type LinkResolutionResult =
@@ -410,6 +405,54 @@ const setLinkHandlers = StateEffect.define<LinkHandlers | null>();
 // Follow command
 // ---------------------------------------------------------------------------
 
+function rootNotePathForTarget(target: string): string | null {
+  const trimmed = target.trim();
+  if (!trimmed) return null;
+
+  const base = trimmed.split("/").filter(Boolean).pop();
+  if (!base || base === "." || base === "..") return null;
+
+  return base.toLowerCase().endsWith(".md") ? base : `${base}.md`;
+}
+
+/**
+ * Derives the initial `# Heading` content for a note created from an
+ * unresolved wiki-link. Uses the link's base name (sans `.md`) so the
+ * heading matches the file's displayed title in the sidebar.
+ */
+function initialContentForTarget(target: string): string | null {
+  const trimmed = target.trim();
+  if (!trimmed) return null;
+
+  const base = trimmed.split("/").filter(Boolean).pop();
+  if (!base || base === "." || base === "..") return null;
+
+  const title = base.replace(/\.md$/i, "").trim();
+  if (!title) return null;
+
+  return `# ${title}\n\n`;
+}
+
+async function createRootNoteForUnresolvedLink(target: string, handlers: LinkHandlers): Promise<boolean> {
+  const relPath = rootNotePathForTarget(target);
+  if (!relPath) return false;
+
+  const initialContent = initialContentForTarget(target);
+
+  try {
+    await invoke("files_create_file", { relPath, initialContent });
+    await filesStore.refresh();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    if (!message.toLowerCase().includes("already exists")) {
+      return false;
+    }
+  }
+
+  handlers.onFollow(relPath);
+  return true;
+}
+
 async function followLinkAtCursor(view: EditorView): Promise<boolean> {
   const { head } = view.state.selection.main;
   const link = wikiLinkAt(view.state, head);
@@ -430,8 +473,8 @@ async function followLinkAtCursor(view: EditorView): Promise<boolean> {
     handlers.onAmbiguous(link.target, resolution.paths);
     return true;
   }
-  // Unresolved — do nothing (could open create-note dialog in future)
-  return true;
+
+  return createRootNoteForUnresolvedLink(link.target, handlers);
 }
 
 // ---------------------------------------------------------------------------
@@ -440,7 +483,8 @@ async function followLinkAtCursor(view: EditorView): Promise<boolean> {
 
 const clickHandler = EditorView.domEventHandlers({
   mousedown(event, view) {
-    // Only primary (left) button.
+    // Follow on normal primary click for v0.1. This keeps wiki-links feeling
+    // like links instead of hidden power-user affordances.
     if (event.button !== 0) return false;
 
     const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
@@ -458,11 +502,13 @@ const clickHandler = EditorView.domEventHandlers({
     void invoke<LinkResolutionResult>("index_resolve_link", {
       target: link.target,
       sourcePath: handlers.sourcePath ?? null,
-    }).then((resolution) => {
+    }).then(async (resolution) => {
       if (resolution.kind === "resolved") {
         handlers.onFollow(resolution.path);
       } else if (resolution.kind === "ambiguous") {
         handlers.onAmbiguous(link.target, resolution.paths);
+      } else {
+        await createRootNoteForUnresolvedLink(link.target, handlers);
       }
     });
 
@@ -479,7 +525,7 @@ const pointerCursorTheme = EditorView.theme({
     cursor: "pointer",
   },
   ".cm-wl-unresolved": {
-    cursor: "default",
+    cursor: "pointer",
   },
 });
 
@@ -490,8 +536,9 @@ const pointerCursorTheme = EditorView.theme({
 /**
  * Autocomplete source for `[[note]]` links.
  *
- * Triggers on `[[` and suggests all indexed markdown files. After a `#`
- * inside a link, suggests headings from the already-typed target file.
+ * Triggers on `[[` and suggests indexed markdown files. For stability in v0.1,
+ * autocomplete only completes note targets and prefers path-qualified inserts
+ * when filename stems are duplicated.
  */
 export async function wikiLinkCompletionSource(
   ctx: CompletionContext,
@@ -499,66 +546,15 @@ export async function wikiLinkCompletionSource(
   const { state, pos } = ctx;
   const text = state.doc.sliceString(0, pos);
 
-  // Find the opening `[[` before the cursor, looking backwards up to 200 chars.
   const lookback = text.slice(Math.max(0, pos - 200));
   const openBracket = lookback.lastIndexOf("[[");
   if (openBracket === -1) return null;
 
-  // Make sure there's no closing `]]` between `[[` and the cursor.
   const afterOpen = lookback.slice(openBracket + 2);
   if (afterOpen.includes("]]")) return null;
+  if (afterOpen.includes("#") || afterOpen.includes("|")) return null;
 
-  // Absolute position of the content after `[[`.
-  const contentStart = pos - afterOpen.length;
-
-  // Check if we're in a heading fragment (after `#`).
-  const hashIdx = afterOpen.indexOf("#");
-  if (hashIdx !== -1) {
-    // We're completing a heading fragment.
-    const targetText = afterOpen.slice(0, hashIdx);
-    const fragmentFrom = contentStart + hashIdx + 1;
-
-    // Resolve target to get file path.
-    let filePath: string | null = null;
-    try {
-      const resolution = await invoke<LinkResolutionResult>("index_resolve_link", {
-        target: targetText.trim(),
-        sourcePath: null,
-      });
-      if (resolution.kind === "resolved") {
-        filePath = resolution.path;
-      }
-    } catch {
-      return null;
-    }
-
-    if (!filePath) return null;
-
-    let headings: HeadingCompletionEntry[];
-    try {
-      headings = await invoke<HeadingCompletionEntry[]>("index_get_headings_for_file", {
-        filePath,
-      });
-    } catch {
-      return null;
-    }
-
-    const options: Completion[] = headings.map((h) => ({
-      label: h.text,
-      detail: "#".repeat(h.level),
-      apply: h.text,
-      boost: 6 - h.level, // higher headings rank higher
-    }));
-
-    return {
-      from: fragmentFrom,
-      options,
-      validFor: /^[^\]]*$/,
-    };
-  }
-
-  // We're completing a note name.
-  const noteFrom = contentStart;
+  const noteFrom = pos - afterOpen.length;
 
   let files: FileCompletionEntry[];
   try {
@@ -567,28 +563,37 @@ export async function wikiLinkCompletionSource(
     return null;
   }
 
-  const options: Completion[] = files.map((f) => ({
-    label: f.name,
-    detail: f.path,
-    // Apply inserts: close the bracket after the name.
-    apply(view: EditorView, completion: Completion, from: number, to: number) {
-      // Find the end of the current `[[...` span (closing `]]` if present,
-      // else insert them). After insertion we append a trailing space so the
-      // user can keep typing the next word immediately.
-      const docText = view.state.doc.toString();
-      const ahead = docText.slice(to, to + 2);
-      const insertEnd = ahead === "]]" ? to + 2 : to;
-      const base = ahead === "]]" ? `${f.name}]]` : `${f.name}]]`;
-      const insert = `${base} `;
-      view.dispatch(
-        view.state.update({
-          changes: { from, to: insertEnd, insert },
-          selection: { anchor: from + insert.length },
-        }),
-      );
-    },
-    boost: 1,
-  }));
+  const nameCounts = new Map<string, number>();
+  for (const file of files) {
+    nameCounts.set(file.name, (nameCounts.get(file.name) ?? 0) + 1);
+  }
+
+  const options: Completion[] = files
+    .slice()
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map((file) => {
+      const needsQualifiedInsert = (nameCounts.get(file.name) ?? 0) > 1;
+      const insertTarget = needsQualifiedInsert
+        ? file.path.replace(/\.md$/i, "")
+        : file.name;
+
+      return {
+        label: file.name,
+        detail: needsQualifiedInsert ? `${file.path} • inserts path` : file.path,
+        apply(view: EditorView, _completion: Completion, from: number, to: number) {
+          const ahead = view.state.doc.sliceString(to, to + 2);
+          const insertEnd = ahead === "]]" ? to + 2 : to;
+          const insert = `${insertTarget}]] `;
+          view.dispatch(
+            view.state.update({
+              changes: { from, to: insertEnd, insert },
+              selection: { anchor: from + insert.length },
+            }),
+          );
+        },
+        boost: needsQualifiedInsert ? 0 : 1,
+      } satisfies Completion;
+    });
 
   return {
     from: noteFrom,
@@ -605,7 +610,6 @@ export async function wikiLinkCompletionSource(
 const primary = "#bdc2ff";
 const onSurfaceVariant = "#c9c7cc";
 const outlineVariant = "#49474e";
-const outline = "#9391a0";
 
 export const wikiLinkTheme = EditorView.theme({
   // De-emphasised brackets [[ and ]]
@@ -642,11 +646,12 @@ export const wikiLinkTheme = EditorView.theme({
   },
   // Target text when unresolved — muted, visually distinct
   ".cm-wl-unresolved": {
-    color: `${primary} !important`,
+    color: `${onSurfaceVariant} !important`,
     textDecoration: "underline",
     textDecorationStyle: "dashed",
-    textDecorationColor: `${primary}80`,
+    textDecorationColor: `${onSurfaceVariant}80`,
     textUnderlineOffset: "2px",
+    opacity: "0.9",
   },
   // Target text when ambiguous — warning amber tint
   ".cm-wl-ambiguous": {

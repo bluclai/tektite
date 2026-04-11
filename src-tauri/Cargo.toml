@@ -43,3 +43,4 @@ serde_json = { workspace = true }
 tektite-vault = { path = "crates/tektite-vault" }
 tektite-index = { path = "crates/tektite-index" }
 tektite-parser = { path = "crates/tektite-parser" }
+tektite-search = { path = "crates/tektite-search" }

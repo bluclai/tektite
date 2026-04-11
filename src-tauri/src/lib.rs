@@ -5,9 +5,10 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
-use tektite_index::{FtsRow, FuzzyFileRow, HeadingSearchRow};
+use tektite_index::{BacklinkRow, FuzzyFileRow, HeadingSearchRow};
+use tektite_search::SearchResult;
 use tektite_vault::watcher::WatcherHandle;
-use tektite_vault::{RenamePlan, Vault, VaultError, VaultTreeEntry};
+use tektite_vault::{RenameOutcome, RenamePlan, Vault, VaultError, VaultTreeEntry};
 
 // ---------------------------------------------------------------------------
 // Managed state types
@@ -27,6 +28,13 @@ struct WatcherState(Mutex<Option<WatcherHandle>>);
 #[derive(Debug, Serialize, Clone)]
 struct VaultFilesChangedPayload {
     paths: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct RenameResult {
+    old_path: String,
+    new_path: String,
+    changed_paths: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -175,7 +183,7 @@ fn vault_open(
 
 #[tauri::command]
 fn editor_read_file(path: String) -> Result<String, String> {
-    fs::read_to_string(&path).map_err(|e| e.to_string())
+    fs::read_to_string(&path).map_err(|e| format!("Failed to open {path}: {e}"))
 }
 
 /// Writes file content and immediately updates the index.
@@ -196,12 +204,14 @@ fn editor_write_file(
     let abs = PathBuf::from(&path);
     let rel = abs
         .strip_prefix(&vault.root)
-        .map_err(|_| "Path is outside vault root".to_string())?
+        .map_err(|_| format!("Cannot save outside the open vault: {path}"))?
         .to_string_lossy()
         .replace('\\', "/");
 
     // Write through the vault (registers write tokens for watcher suppression).
-    vault.write_file(&rel, &content).map_err(ve)?;
+    vault
+        .write_file(&rel, &content)
+        .map_err(|e| format!("Failed to save {rel}: {}", ve(e)))?;
 
     // Immediately re-index so backlinks and link resolution are current.
     if let Some(index) = vault.index.as_mut() {
@@ -232,24 +242,53 @@ fn files_get_tree(vault_state: State<VaultState>) -> Result<Vec<VaultTreeEntry>,
 }
 
 #[tauri::command]
-fn files_create_file(rel_path: String, vault_state: State<VaultState>) -> Result<(), String> {
-    let guard = vault_state.0.lock().unwrap();
-    let vault = guard.as_ref().ok_or("No vault open")?;
-    vault.create_file(&rel_path).map_err(ve)
+fn files_create_file(
+    rel_path: String,
+    initial_content: Option<String>,
+    vault_state: State<VaultState>,
+) -> Result<Vec<VaultTreeEntry>, String> {
+    let mut guard = vault_state.0.lock().unwrap();
+    let vault = guard.as_mut().ok_or("No vault open")?;
+    vault
+        .create_file(&rel_path, initial_content.as_deref())
+        .map_err(ve)?;
+
+    let abs = vault.absolute_path(&rel_path).map_err(ve)?;
+    if let Err(error) = vault.reindex_file(&abs) {
+        eprintln!("files_create_file: failed to index new file {rel_path}: {error}");
+    }
+
+    vault.get_tree().map_err(ve)
 }
 
 #[tauri::command]
-fn files_create_folder(rel_path: String, vault_state: State<VaultState>) -> Result<(), String> {
-    let guard = vault_state.0.lock().unwrap();
-    let vault = guard.as_ref().ok_or("No vault open")?;
-    vault.create_folder(&rel_path).map_err(ve)
+fn files_create_folder(
+    rel_path: String,
+    vault_state: State<VaultState>,
+) -> Result<Vec<VaultTreeEntry>, String> {
+    let mut guard = vault_state.0.lock().unwrap();
+    let vault = guard.as_mut().ok_or("No vault open")?;
+    vault.create_folder(&rel_path).map_err(ve)?;
+    vault.get_tree().map_err(ve)
 }
 
 #[tauri::command]
-fn files_delete(rel_path: String, vault_state: State<VaultState>) -> Result<(), String> {
-    let guard = vault_state.0.lock().unwrap();
-    let vault = guard.as_ref().ok_or("No vault open")?;
-    vault.delete(&rel_path).map_err(ve)
+fn files_delete(rel_path: String, vault_state: State<VaultState>) -> Result<Vec<VaultTreeEntry>, String> {
+    let mut guard = vault_state.0.lock().unwrap();
+    let vault = guard.as_mut().ok_or("No vault open")?;
+
+    // Remove from index *before* deleting from disk so the index cannot
+    // end up with a dangling entry (the watcher will also fire later,
+    // making this idempotent).
+    let abs = vault.absolute_path(&rel_path).map_err(ve)?;
+    let _ = vault.remove_from_index(&abs);
+
+    // Register a write token so the watcher suppresses the delete event
+    // and doesn't redundantly try to remove from index.
+    vault.write_tokens.insert(abs.clone());
+
+    vault.delete(&rel_path).map_err(ve)?;
+    vault.get_tree().map_err(ve)
 }
 
 // ---------------------------------------------------------------------------
@@ -273,10 +312,38 @@ fn vault_plan_rename(
 /// Executes a previously computed [`RenamePlan`]: rewrites affected files,
 /// renames the target on disk, and updates the index.
 #[tauri::command]
-fn vault_apply_rename(plan: RenamePlan, vault_state: State<VaultState>) -> Result<(), String> {
-    let mut guard = vault_state.0.lock().unwrap();
-    let vault = guard.as_mut().ok_or("No vault open")?;
-    vault.apply_rename(&plan).map_err(ve)
+fn vault_apply_rename(
+    app: tauri::AppHandle,
+    plan: RenamePlan,
+    vault_state: State<VaultState>,
+) -> Result<RenameResult, String> {
+    let outcome = {
+        let mut guard = vault_state.0.lock().unwrap();
+        let vault = guard.as_mut().ok_or("No vault open")?;
+        vault.apply_rename(&plan).map_err(ve)?
+    };
+
+    let RenameOutcome {
+        old_path,
+        new_path,
+        changed_paths,
+    } = outcome;
+
+    let _ = app.emit("file-tree-updated", ());
+    if !changed_paths.is_empty() {
+        let _ = app.emit(
+            "vault-files-changed",
+            VaultFilesChangedPayload {
+                paths: changed_paths.clone(),
+            },
+        );
+    }
+
+    Ok(RenameResult {
+        old_path,
+        new_path,
+        changed_paths,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -316,14 +383,10 @@ fn index_resolve_link(
         .resolve_link(&target, source_path.as_deref())
         .map_err(|e| e.to_string())?;
 
-    // We need NoteId → path mapping for the result.
     let id_to_path = |id: &str| -> Result<String, String> {
-        // Look up the path from the index's all_files query.
-        let files = index.all_files().map_err(|e| e.to_string())?;
-        files
-            .into_iter()
-            .find(|f| f.id == id)
-            .map(|f| f.path)
+        index
+            .path_for_id(id)
+            .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Note ID {} not found", id))
     };
 
@@ -334,8 +397,12 @@ fn index_resolve_link(
         }
         LinkResolution::Unresolved => LinkResolutionResult::Unresolved,
         LinkResolution::Ambiguous(ids) => {
-            let paths: Result<Vec<_>, _> = ids.iter().map(|id| id_to_path(id)).collect();
-            LinkResolutionResult::Ambiguous { paths: paths? }
+            let mut paths: Vec<_> = ids
+                .iter()
+                .map(|id| id_to_path(id))
+                .collect::<Result<Vec<_>, _>>()?;
+            paths.sort();
+            LinkResolutionResult::Ambiguous { paths }
         }
     };
 
@@ -416,8 +483,8 @@ pub struct HeadingCompletionEntry {
 pub struct BacklinkEntry {
     /// Vault-relative path of the note that contains the link.
     pub source_path: String,
-    /// Display name (filename stem) of the source note.
-    pub source_name: String,
+    /// Display title of the source note.
+    pub source_title: String,
     /// The raw link target text as written in the source file.
     pub target: String,
     /// Optional heading fragment, e.g. `"heading-text"`.
@@ -442,29 +509,16 @@ fn index_get_backlinks(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("File not in index: {}", file_path))?;
 
-    let link_records = index.get_backlinks(&target_id).map_err(|e| e.to_string())?;
-
-    // Build a map of NoteId → path for resolving source_id to source_path.
-    let all = index.all_files().map_err(|e| e.to_string())?;
-    let id_to_path: std::collections::HashMap<_, _> =
-        all.into_iter().map(|f| (f.id, f.path)).collect();
-
-    let entries = link_records
+    let entries = index
+        .get_backlink_rows(&target_id)
+        .map_err(|e| e.to_string())?
         .into_iter()
-        .filter_map(|rec| {
-            let source_path = id_to_path.get(&rec.source_id)?.clone();
-            let source_name = PathBuf::from(&source_path)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            Some(BacklinkEntry {
-                source_path,
-                source_name,
-                target: rec.target,
-                fragment: rec.fragment,
-                alias: rec.alias,
-            })
+        .map(|row: BacklinkRow| BacklinkEntry {
+            source_path: row.source_path,
+            source_title: row.source_title,
+            target: row.target,
+            fragment: row.fragment,
+            alias: row.alias,
         })
         .collect();
 
@@ -481,13 +535,13 @@ fn search_full_text(
     query: String,
     limit: Option<usize>,
     vault_state: State<VaultState>,
-) -> Result<Vec<FtsRow>, String> {
+) -> Result<Vec<SearchResult>, String> {
     let guard = vault_state.0.lock().unwrap();
     let vault = guard.as_ref().ok_or("No vault open")?;
     let index = vault.index.as_ref().ok_or("Index not available")?;
 
     let limit = limit.unwrap_or(20).min(100); // cap at 100
-    index.search_fts(&query, limit).map_err(|e| e.to_string())
+    tektite_search::search(index, &query, limit).map_err(|e| e.to_string())
 }
 
 /// Fuzzy-match files by name.

@@ -1,7 +1,7 @@
 {
   "name": "tektite",
   "version": "0.1.0",
-  "description": "",
+  "description": "A local-first markdown workspace",
   "type": "module",
   "scripts": {
     "dev": "vite dev",

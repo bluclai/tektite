@@ -4,6 +4,7 @@
 //! Hidden entries (names starting with `.`) are skipped — this excludes
 //! `.tektite/`, `.git/`, and similar metadata directories.
 
+use std::cmp::Ordering;
 use std::path::Path;
 
 use walkdir::WalkDir;
@@ -33,7 +34,7 @@ fn build_level(root: &Path, dir: &Path) -> Result<Vec<VaultTreeEntry>, VaultErro
     for entry in WalkDir::new(dir)
         .min_depth(1)
         .max_depth(1)
-        .sort_by_file_name()
+        .sort_by(|a, b| compare_entry_names(a.file_name(), b.file_name()))
         .into_iter()
         .filter_map(|e| e.ok())
     {
@@ -57,6 +58,7 @@ fn build_level(root: &Path, dir: &Path) -> Result<Vec<VaultTreeEntry>, VaultErro
                 path: rel_path,
                 name,
                 is_dir: true,
+                is_markdown: false,
                 children,
             });
         } else {
@@ -64,6 +66,9 @@ fn build_level(root: &Path, dir: &Path) -> Result<Vec<VaultTreeEntry>, VaultErro
                 path: rel_path,
                 name,
                 is_dir: false,
+                is_markdown: abs_path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md")),
                 children: vec![],
             });
         }
@@ -73,4 +78,55 @@ fn build_level(root: &Path, dir: &Path) -> Result<Vec<VaultTreeEntry>, VaultErro
     // because WalkDir uses sort_by_file_name.
     dirs.extend(files);
     Ok(dirs)
+}
+
+fn compare_entry_names(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> Ordering {
+    let a = a.to_string_lossy();
+    let b = b.to_string_lossy();
+    a.to_lowercase()
+        .cmp(&b.to_lowercase())
+        .then_with(|| a.cmp(&b))
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::build_tree;
+
+    #[test]
+    fn build_tree_skips_hidden_entries_and_marks_markdown_files() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("docs")).expect("create docs dir");
+        std::fs::create_dir_all(dir.path().join(".git")).expect("create hidden dir");
+        std::fs::write(dir.path().join("docs/Note.md"), "# note").expect("write md");
+        std::fs::write(dir.path().join("docs/image.png"), "png").expect("write png");
+        std::fs::write(dir.path().join(".env"), "hidden").expect("write hidden file");
+
+        let tree = build_tree(dir.path()).expect("build tree");
+
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].path, "docs");
+        assert!(tree[0].is_dir);
+        assert!(!tree[0].is_markdown);
+        assert_eq!(tree[0].children.len(), 2);
+        assert_eq!(tree[0].children[0].name, "image.png");
+        assert!(!tree[0].children[0].is_markdown);
+        assert_eq!(tree[0].children[1].name, "Note.md");
+        assert!(tree[0].children[1].is_markdown);
+    }
+
+    #[test]
+    fn build_tree_sorts_case_insensitively_with_directories_first() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("beta")).expect("create beta dir");
+        std::fs::create_dir_all(dir.path().join("Zoo")).expect("create zoo dir");
+        std::fs::write(dir.path().join("alpha.md"), "# alpha").expect("write alpha");
+        std::fs::write(dir.path().join("Notes.txt"), "notes").expect("write notes");
+
+        let tree = build_tree(dir.path()).expect("build tree");
+        let names: Vec<_> = tree.iter().map(|entry| entry.name.as_str()).collect();
+
+        assert_eq!(names, vec!["beta", "Zoo", "alpha.md", "Notes.txt"]);
+    }
 }

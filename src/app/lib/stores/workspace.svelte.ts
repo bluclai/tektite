@@ -168,6 +168,45 @@ function resizeSplitInTree(
   return { ...layout, a, b };
 }
 
+function renamePathValue(path: string, oldPath: string, newPath: string): string {
+  if (path === oldPath) {
+    return newPath;
+  }
+
+  const oldPrefix = `${oldPath}/`;
+  if (path.startsWith(oldPrefix)) {
+    return `${newPath}/${path.slice(oldPrefix.length)}`;
+  }
+
+  return path;
+}
+
+function renamePathsInTree(layout: PaneLayout, oldPath: string, newPath: string): PaneLayout {
+  if (layout.type === "leaf") {
+    let changed = false;
+    const tabs = layout.tabs.map((tab) => {
+      const nextPath = renamePathValue(tab.path, oldPath, newPath);
+      if (nextPath === tab.path) {
+        return tab;
+      }
+
+      changed = true;
+      return {
+        ...tab,
+        path: nextPath,
+        name: nameFromPath(nextPath),
+      };
+    });
+
+    return changed ? { ...layout, tabs } : layout;
+  }
+
+  const a = renamePathsInTree(layout.a, oldPath, newPath);
+  const b = renamePathsInTree(layout.b, oldPath, newPath);
+  if (a === layout.a && b === layout.b) return layout;
+  return { ...layout, a, b };
+}
+
 // ---------------------------------------------------------------------------
 // Workspace persistence shape (version-guarded)
 // ---------------------------------------------------------------------------
@@ -198,7 +237,14 @@ let _sidebarOpen = $state<boolean>(true);
 let _sidebarWidth = $state<number>(SIDEBAR_DEFAULT_WIDTH);
 let _activePaneId = $state<string>(_initialLeaf.id);
 let _paneTree = $state<PaneLayout>(_initialLeaf);
-let _previewMode = $state<boolean>(false);
+
+// Memoized lookup of the active leaf's active tab path. Recomputes only
+// when _paneTree or _activePaneId change rather than on every getter read.
+const _activeFilePath = $derived.by<string | null>(() => {
+  const leaf = allLeaves(_paneTree).find((l) => l.id === _activePaneId) ?? null;
+  if (!leaf || !leaf.activeTabId) return null;
+  return leaf.tabs.find((t) => t.id === leaf.activeTabId)?.path ?? null;
+});
 
 // ---------------------------------------------------------------------------
 // Debounced persistence
@@ -228,15 +274,6 @@ function scheduleSave() {
 // ---------------------------------------------------------------------------
 
 export const workspaceStore = {
-  // --- Preview mode ---
-  get previewMode() {
-    return _previewMode;
-  },
-
-  togglePreviewMode() {
-    _previewMode = !_previewMode;
-  },
-
   // --- Sidebar ---
   get activePanel() {
     return _activePanel;
@@ -286,6 +323,11 @@ export const workspaceStore = {
 
   get activePaneId(): string {
     return _activePaneId;
+  },
+
+  /** Vault-relative path of the active tab in the active pane, or null if none. */
+  get activeFilePath(): string | null {
+    return _activeFilePath;
   },
 
   setActivePane(paneId: string) {
@@ -354,6 +396,11 @@ export const workspaceStore = {
   /** Commit final split sizes on drag end. */
   commitSplitResize(splitId: string, sizes: [number, number]) {
     this.resizeSplitImmediate(splitId, sizes);
+    scheduleSave();
+  },
+
+  renamePath(oldPath: string, newPath: string) {
+    _paneTree = renamePathsInTree(_paneTree, oldPath, newPath);
     scheduleSave();
   },
 
