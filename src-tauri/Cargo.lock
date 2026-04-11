@@ -4326,6 +4326,7 @@ dependencies = [
  "tauri-plugin-os",
  "tektite-index",
  "tektite-parser",
+ "tektite-search",
  "tektite-vault",
 ]
 
@@ -4360,6 +4361,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "tektite-index",
+ "tektite-parser",
  "thiserror 2.0.18",
  "tracing",
 ]

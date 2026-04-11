@@ -4,6 +4,7 @@
 	import { vaultStore } from '$lib/stores/vault.svelte';
 
 	interface FtsRow {
+		id: string;
 		path: string;
 		title: string;
 		snippet: string;
@@ -63,8 +64,16 @@
 			.replace(/__ENDMATCH__/g, '</mark>');
 	}
 
+	function toAbsolutePath(path: string): string {
+		if (!vaultStore.path || path.startsWith(vaultStore.path)) {
+			return path;
+		}
+
+		return `${vaultStore.path}/${path}`;
+	}
+
 	function openFile(path: string) {
-		workspaceStore.openTab(path);
+		workspaceStore.openTab(toAbsolutePath(path));
 		query = '';
 	}
 
@@ -74,6 +83,10 @@
 
 	function getTitleOrPath(row: FtsRow): string {
 		return row.title || getFileName(row.path);
+	}
+
+	function getResultKey(row: FtsRow, index: number): string {
+		return `${row.path}:${row.id}:${index}`;
 	}
 </script>
 
@@ -106,7 +119,7 @@
 			{/if}
 		{:else}
 			<div class="divide-y divide-outline-variant/10">
-				{#each results as row (row.path)}
+				{#each results as row, index (getResultKey(row, index))}
 					<button
 						type="button"
 						onclick={() => openFile(row.path)}

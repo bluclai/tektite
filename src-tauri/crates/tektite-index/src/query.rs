@@ -72,6 +72,15 @@ pub struct HeadingSearchRow {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacklinkRow {
+    pub source_path: String,
+    pub source_title: String,
+    pub target: String,
+    pub fragment: Option<String>,
+    pub alias: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Query implementations
 // ---------------------------------------------------------------------------
@@ -177,6 +186,32 @@ impl Index {
                 fragment: row.get(3)?,
                 alias: row.get(4)?,
                 resolved_target_id: row.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Returns backlinks with source note metadata, sorted deterministically.
+    pub fn get_backlink_rows(&self, target_id: &str) -> Result<Vec<BacklinkRow>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT src.path,
+                    COALESCE(NULLIF(fts.title, ''), src.path),
+                    l.target,
+                    l.fragment,
+                    l.alias
+             FROM links l
+             JOIN files src ON src.id = l.source_id
+             LEFT JOIN fts ON fts.path = src.path
+             WHERE l.resolved_target_id = ?1
+             ORDER BY LOWER(src.path), l.id",
+        )?;
+        let rows = stmt.query_map(params![target_id], |row| {
+            Ok(BacklinkRow {
+                source_path: row.get(0)?,
+                source_title: row.get(1)?,
+                target: row.get(2)?,
+                fragment: row.get(3)?,
+                alias: row.get(4)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -495,4 +530,39 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i64> {
     }
 
     Some(score)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seed_index() -> Index {
+        let mut index = Index::open_in_memory().expect("index");
+        let target = tektite_parser::parse("---\ntitle: Target Note\n---\n# Target Note\n");
+        let source_a = tektite_parser::parse(
+            "---\ntitle: Alpha Source\n---\n[[target-note]] and [[target-note|Alias]]\n",
+        );
+        let source_b = tektite_parser::parse("# Beta Source\n[[target-note]]\n");
+
+        index.upsert("target-note.md", 1, &target).expect("target");
+        index.upsert("alpha.md", 1, &source_a).expect("alpha");
+        index.upsert("nested/beta.md", 1, &source_b).expect("beta");
+        index
+    }
+
+    #[test]
+    fn backlink_rows_include_titles_and_are_sorted() {
+        let index = seed_index();
+        let target_id = index
+            .id_for_path("target-note.md")
+            .expect("lookup")
+            .expect("indexed target");
+
+        let rows = index.get_backlink_rows(&target_id).expect("rows");
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].source_path, "alpha.md");
+        assert_eq!(rows[0].source_title, "Alpha Source");
+        assert_eq!(rows[2].source_path, "nested/beta.md");
+    }
 }

@@ -16,7 +16,7 @@ mod rename;
 mod resolve;
 mod schema;
 
-pub use query::{FtsRow, FuzzyFileRow, HeadingSearchRow};
+pub use query::{BacklinkRow, FtsRow, FuzzyFileRow, HeadingSearchRow};
 pub use rename::{rewrite_content, RenameEdit, RenamePlan};
 pub use resolve::LinkResolution;
 

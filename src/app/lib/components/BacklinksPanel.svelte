@@ -19,7 +19,7 @@
 
 	interface BacklinkEntry {
 		source_path: string;
-		source_name: string;
+		source_title: string;
 		target: string;
 		fragment: string | null;
 		alias: string | null;
@@ -110,7 +110,10 @@
 	function openSource(entry: BacklinkEntry) {
 		// source_path is vault-relative; openTab expects absolute path.
 		const vaultRoot = vaultStore.path;
-		const absPath = vaultRoot ? `${vaultRoot}/${entry.source_path}` : entry.source_path;
+		const absPath =
+			vaultRoot && !entry.source_path.startsWith(vaultRoot)
+				? `${vaultRoot}/${entry.source_path}`
+				: entry.source_path;
 		workspaceStore.openTab(absPath);
 	}
 
@@ -120,6 +123,10 @@
 		if (entry.fragment) text += `#${entry.fragment}`;
 		if (entry.alias) text += `|${entry.alias}`;
 		return `[[${text}]]`;
+	}
+
+	function getDisplayTitle(entry: BacklinkEntry): string {
+		return entry.source_title || entry.source_path.split('/').pop() || entry.source_path;
 	}
 </script>
 
@@ -166,7 +173,7 @@
 				>
 					<!-- Source note name -->
 					<div class="mb-0.5 text-xs font-medium text-primary">
-						{entry.source_name}
+						{getDisplayTitle(entry)}
 					</div>
 
 					<!-- Source path hint -->

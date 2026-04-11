@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
-use tektite_index::{FtsRow, FuzzyFileRow, HeadingSearchRow};
+use tektite_index::{BacklinkRow, FuzzyFileRow, HeadingSearchRow};
+use tektite_search::SearchResult;
 use tektite_vault::watcher::WatcherHandle;
 use tektite_vault::{RenamePlan, Vault, VaultError, VaultTreeEntry};
 
@@ -432,8 +433,8 @@ pub struct HeadingCompletionEntry {
 pub struct BacklinkEntry {
     /// Vault-relative path of the note that contains the link.
     pub source_path: String,
-    /// Display name (filename stem) of the source note.
-    pub source_name: String,
+    /// Display title of the source note.
+    pub source_title: String,
     /// The raw link target text as written in the source file.
     pub target: String,
     /// Optional heading fragment, e.g. `"heading-text"`.
@@ -458,29 +459,16 @@ fn index_get_backlinks(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("File not in index: {}", file_path))?;
 
-    let link_records = index.get_backlinks(&target_id).map_err(|e| e.to_string())?;
-
-    // Build a map of NoteId → path for resolving source_id to source_path.
-    let all = index.all_files().map_err(|e| e.to_string())?;
-    let id_to_path: std::collections::HashMap<_, _> =
-        all.into_iter().map(|f| (f.id, f.path)).collect();
-
-    let entries = link_records
+    let entries = index
+        .get_backlink_rows(&target_id)
+        .map_err(|e| e.to_string())?
         .into_iter()
-        .filter_map(|rec| {
-            let source_path = id_to_path.get(&rec.source_id)?.clone();
-            let source_name = PathBuf::from(&source_path)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            Some(BacklinkEntry {
-                source_path,
-                source_name,
-                target: rec.target,
-                fragment: rec.fragment,
-                alias: rec.alias,
-            })
+        .map(|row: BacklinkRow| BacklinkEntry {
+            source_path: row.source_path,
+            source_title: row.source_title,
+            target: row.target,
+            fragment: row.fragment,
+            alias: row.alias,
         })
         .collect();
 
@@ -497,13 +485,13 @@ fn search_full_text(
     query: String,
     limit: Option<usize>,
     vault_state: State<VaultState>,
-) -> Result<Vec<FtsRow>, String> {
+) -> Result<Vec<SearchResult>, String> {
     let guard = vault_state.0.lock().unwrap();
     let vault = guard.as_ref().ok_or("No vault open")?;
     let index = vault.index.as_ref().ok_or("Index not available")?;
 
     let limit = limit.unwrap_or(20).min(100); // cap at 100
-    index.search_fts(&query, limit).map_err(|e| e.to_string())
+    tektite_search::search(index, &query, limit).map_err(|e| e.to_string())
 }
 
 /// Fuzzy-match files by name.
