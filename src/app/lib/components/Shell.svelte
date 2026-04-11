@@ -1,5 +1,6 @@
 <script lang="ts">
     import { type Snippet } from "svelte";
+    import { getCurrentWindow } from "@tauri-apps/api/window";
     import Titlebar from "$lib/components/Titlebar.svelte";
     import ActivityBar from "$lib/components/ActivityBar.svelte";
     import Sidebar from "$lib/components/Sidebar.svelte";
@@ -18,6 +19,15 @@
         const p = workspaceStore.activeFilePath;
         if (!p) return '';
         return p.split('/').pop()?.replace(/\.md$/i, '') ?? '';
+    });
+
+    // Sync the OS window title (alt-tab / taskbar / dock) to the active file
+    // so the app behaves like other native editors. The custom in-app titlebar
+    // shows the same value via the `title` prop below.
+    const win = getCurrentWindow();
+    $effect(() => {
+        const t = titlebarTitle ? `${titlebarTitle} — Tektite` : 'Tektite';
+        void win.setTitle(t);
     });
 
     function onKeydown(e: KeyboardEvent) {
@@ -39,8 +49,6 @@
             workspaceStore.splitPane(workspaceStore.activePaneId, "horizontal");
             return;
         }
-
-
     }
 </script>
 

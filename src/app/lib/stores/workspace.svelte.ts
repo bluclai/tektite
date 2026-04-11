@@ -238,6 +238,14 @@ let _sidebarWidth = $state<number>(SIDEBAR_DEFAULT_WIDTH);
 let _activePaneId = $state<string>(_initialLeaf.id);
 let _paneTree = $state<PaneLayout>(_initialLeaf);
 
+// Memoized lookup of the active leaf's active tab path. Recomputes only
+// when _paneTree or _activePaneId change rather than on every getter read.
+const _activeFilePath = $derived.by<string | null>(() => {
+  const leaf = allLeaves(_paneTree).find((l) => l.id === _activePaneId) ?? null;
+  if (!leaf || !leaf.activeTabId) return null;
+  return leaf.tabs.find((t) => t.id === leaf.activeTabId)?.path ?? null;
+});
+
 // ---------------------------------------------------------------------------
 // Debounced persistence
 // ---------------------------------------------------------------------------
@@ -319,9 +327,7 @@ export const workspaceStore = {
 
   /** Vault-relative path of the active tab in the active pane, or null if none. */
   get activeFilePath(): string | null {
-    const leaf = allLeaves(_paneTree).find((l) => l.id === _activePaneId) ?? null;
-    if (!leaf || !leaf.activeTabId) return null;
-    return leaf.tabs.find((t) => t.id === leaf.activeTabId)?.path ?? null;
+    return _activeFilePath;
   },
 
   setActivePane(paneId: string) {

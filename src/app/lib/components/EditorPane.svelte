@@ -8,9 +8,9 @@
      *   3. Ctrl+S / Cmd+S: flush immediately.
      *   4. On destroy (tab switch / close): flush any pending autosave, destroy view.
      *
-     * Extension compartments are exported so later phases (wiki-link syntax,
-     * live preview, autocomplete) can reconfigure them without rebuilding the
-     * base stack.
+     * The wiki-link syntax/decorations and autocomplete source are wired in
+     * after construction via dedicated compartments so they can be reconfigured
+     * without rebuilding the base extension stack.
      */
 
     import { onMount } from 'svelte';
@@ -49,7 +49,8 @@
     let containerEl = $state<HTMLDivElement | null>(null);
 
     // ---------------------------------------------------------------------------
-    // Ambiguous link dialog state (Phase 9)
+    // Ambiguous link dialog state — opened when wiki-link resolution finds
+    // multiple candidates and the user needs to disambiguate.
     // ---------------------------------------------------------------------------
 
     let ambiguousOpen = $state(false);
@@ -57,9 +58,9 @@
     let ambiguousPaths = $state<string[]>([]);
 
     // ---------------------------------------------------------------------------
-    // Compartments — reconfigurable extension slots for future phases.
-    // Each compartment wraps a single extension group that can be swapped
-    // without reconstructing the full EditorState.
+    // Compartments — reconfigurable extension slots. Each compartment wraps a
+    // single extension group that can be swapped without reconstructing the
+    // full EditorState.
     // ---------------------------------------------------------------------------
 
     /** Slot for wiki-link syntax + decorations. */
@@ -84,7 +85,8 @@
     let lastSavedContent = $state('');
     let loadError = $state<string | null>(null);
 
-    // Phase 10: external change conflict banner (non-modal).
+    // External change conflict banner (non-modal) — surfaces when the file
+    // changes on disk while the editor has it open.
     let externalBannerOpen = $state(false);
     let externalConflict = $state(false);
     let externalContentSnapshot = $state<string | null>(null);
@@ -268,7 +270,7 @@
             // --- Theme (static — Clay design system tokens) ---
             clayTheme,
 
-            // --- Syntax: markdown (embedded language highlighting added in Phase 7+) ---
+            // --- Syntax: markdown ---
             markdown({
                 base: markdownLanguage,
                 addKeymap: true,
@@ -435,7 +437,7 @@
     <div bind:this={containerEl} class="h-full w-full overflow-hidden"></div>
 </div>
 
-<!-- Ambiguous link disambiguation dialog (Phase 9) -->
+<!-- Ambiguous link disambiguation dialog -->
 <AmbiguousLinkDialog
     bind:open={ambiguousOpen}
     target={ambiguousTarget}
