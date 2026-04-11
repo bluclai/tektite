@@ -1,23 +1,6 @@
 <script lang="ts">
-	/**
-	 * RenameDialog — preview-and-apply rename flow.
-	 *
-	 * Shows the proposed new name (editable), calls vault_plan_rename to fetch
-	 * the list of wiki-link rewrites, presents the before/after diff, and
-	 * applies on confirm.
-	 *
-	 * Props:
-	 *   open        — controls dialog visibility (bindable)
-	 *   oldRelPath  — vault-relative path of the file being renamed
-	 *   vaultRoot   — absolute vault root (used to build absolute paths)
-	 *   onRenamed   — callback fired after a successful rename
-	 */
 	import { invoke } from '@tauri-apps/api/core';
 	import { filesStore } from '$lib/stores/files.svelte';
-
-	// ---------------------------------------------------------------------------
-	// Types (mirror Rust RenamePlan / RenameEdit)
-	// ---------------------------------------------------------------------------
 
 	interface RenameEdit {
 		file_path: string;
@@ -31,33 +14,31 @@
 		edits: RenameEdit[];
 	}
 
-	// ---------------------------------------------------------------------------
-	// Props
-	// ---------------------------------------------------------------------------
+	interface RenameResult {
+		old_path: string;
+		new_path: string;
+		changed_paths: string[];
+	}
 
 	interface Props {
 		open: boolean;
 		oldRelPath: string;
-		vaultRoot: string;
-		onRenamed?: (newRelPath: string) => void;
+		onRenamed?: (result: RenameResult) => void;
 		onClose?: () => void;
 	}
 
-	let { open = $bindable(), oldRelPath, vaultRoot, onRenamed, onClose }: Props = $props();
+	let { open = $bindable(), oldRelPath, onRenamed, onClose }: Props = $props();
 
-	// ---------------------------------------------------------------------------
-	// Local state
-	// ---------------------------------------------------------------------------
-
-	/** Editable new filename (just the basename, without extension if .md). */
 	let newName = $state('');
 	let plan = $state<RenamePlan | null>(null);
 	let planning = $state(false);
 	let applying = $state(false);
 	let planError = $state<string | null>(null);
 	let applyError = $state<string | null>(null);
+	let lastPlannedTarget = $state('');
+	let previewRequestId = 0;
+	let planTimer: ReturnType<typeof setTimeout> | null = null;
 
-	/** Group edits by file path for display. */
 	let editsByFile = $derived.by(() => {
 		if (!plan) return [];
 		const map = new Map<string, RenameEdit[]>();
@@ -69,84 +50,92 @@
 		return [...map.entries()].map(([filePath, edits]) => ({ filePath, edits }));
 	});
 
-	// ---------------------------------------------------------------------------
-	// Derived: new vault-relative path
-	// ---------------------------------------------------------------------------
-
+	let trimmedName = $derived(newName.trim());
 	let newRelPath = $derived.by(() => {
-		if (!newName.trim()) return '';
+		if (!trimmedName) return '';
 		const parts = oldRelPath.split('/');
 		const oldBasename = parts[parts.length - 1];
 		const isMarkdown = oldBasename.endsWith('.md');
 		const newBasename = isMarkdown
-			? newName.trim().endsWith('.md')
-				? newName.trim()
-				: `${newName.trim()}.md`
-			: newName.trim();
+			? trimmedName.endsWith('.md')
+				? trimmedName
+				: `${trimmedName}.md`
+			: trimmedName;
 		return [...parts.slice(0, -1), newBasename].join('/');
 	});
-
-	// ---------------------------------------------------------------------------
-	// Initialise when dialog opens
-	// ---------------------------------------------------------------------------
+	let previewReady = $derived(plan !== null && lastPlannedTarget === newRelPath);
+	let canApply = $derived(
+		previewReady && !planning && !applying && !planError && newRelPath !== oldRelPath,
+	);
 
 	$effect(() => {
-		if (open) {
-			// Pre-fill the name field with the stem (without .md)
-			const basename = oldRelPath.split('/').pop() ?? oldRelPath;
-			newName = basename.endsWith('.md') ? basename.slice(0, -3) : basename;
-			plan = null;
-			planError = null;
-			applyError = null;
+		if (!open) {
+			if (planTimer) {
+				clearTimeout(planTimer);
+				planTimer = null;
+			}
+			planning = false;
+			return;
 		}
+
+		const basename = oldRelPath.split('/').pop() ?? oldRelPath;
+		newName = basename.endsWith('.md') ? basename.slice(0, -3) : basename;
+		plan = null;
+		planning = false;
+		planError = null;
+		applyError = null;
+		lastPlannedTarget = '';
 	});
 
-	// ---------------------------------------------------------------------------
-	// Plan fetch — debounced on newName changes
-	// ---------------------------------------------------------------------------
-
-	let planTimer: ReturnType<typeof setTimeout> | null = null;
-
 	$effect(() => {
-		// Track newRelPath so this reruns when it changes
 		const target = newRelPath;
 		plan = null;
 		planError = null;
+		lastPlannedTarget = '';
 
-		if (!target || target === oldRelPath) return;
+		if (planTimer) {
+			clearTimeout(planTimer);
+			planTimer = null;
+		}
 
-		if (planTimer) clearTimeout(planTimer);
+		if (!open || !target || target === oldRelPath) {
+			planning = false;
+			return;
+		}
+
+		const requestId = ++previewRequestId;
 		planTimer = setTimeout(async () => {
 			planning = true;
 			try {
-				plan = await invoke<RenamePlan>('vault_plan_rename', {
+				const nextPlan = await invoke<RenamePlan>('vault_plan_rename', {
 					oldPath: oldRelPath,
 					newPath: target,
 				});
-			} catch (e) {
-				planError = String(e);
+				if (requestId !== previewRequestId || !open) return;
+				plan = nextPlan;
+				lastPlannedTarget = target;
+			} catch (error) {
+				if (requestId !== previewRequestId || !open) return;
+				planError = error instanceof Error ? error.message : String(error);
 			} finally {
-				planning = false;
+				if (requestId === previewRequestId) {
+					planning = false;
+				}
 			}
-		}, 300);
+		}, 250);
 	});
 
-	// ---------------------------------------------------------------------------
-	// Apply
-	// ---------------------------------------------------------------------------
-
 	async function applyRename() {
-		if (!plan) return;
+		if (!plan || !previewReady) return;
 		applying = true;
 		applyError = null;
 		try {
-			await invoke<void>('vault_apply_rename', { plan });
-			// Refresh the file tree
+			const result = await invoke<RenameResult>('vault_apply_rename', { plan });
 			await filesStore.refresh();
-			onRenamed?.(newRelPath);
+			onRenamed?.(result);
 			open = false;
-		} catch (e) {
-			applyError = String(e);
+		} catch (error) {
+			applyError = error instanceof Error ? error.message : String(error);
 		} finally {
 			applying = false;
 		}
@@ -157,38 +146,35 @@
 		onClose?.();
 	}
 
-	function onKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape') close();
-		if (e.key === 'Enter' && plan && !applying) void applyRename();
+	function onKeydown(event: KeyboardEvent) {
+		if (event.key === 'Escape') close();
+		if (event.key === 'Enter' && canApply) void applyRename();
 	}
 </script>
 
 {#if open}
-	<!-- Backdrop -->
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div
 		class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
 		role="presentation"
-		onclick={(e) => { if (e.target === e.currentTarget) close(); }}
+		onclick={(event) => {
+			if (event.target === event.currentTarget) close();
+		}}
 	>
-		<!-- Dialog surface -->
 		<div
-			class="relative w-[520px] max-w-[90vw] rounded-xl border border-outline-variant/20 bg-surface-container shadow-2xl"
+			class="relative w-[560px] max-w-[90vw] rounded-xl border border-outline-variant/20 bg-surface-container shadow-2xl"
 			role="dialog"
 			aria-modal="true"
 			aria-label="Rename file"
 			tabindex="-1"
 			onkeydown={onKeydown}
 		>
-			<!-- Header -->
 			<div class="border-b border-outline-variant/15 px-5 py-4">
 				<h2 class="text-sm font-medium text-on-surface">Rename file</h2>
 				<p class="mt-0.5 truncate text-xs text-on-surface-variant opacity-50">{oldRelPath}</p>
 			</div>
 
-			<!-- Body -->
 			<div class="px-5 py-4">
-				<!-- New name input -->
 				<label class="mb-3 block">
 					<span class="mb-1.5 block text-xs font-medium text-on-surface-variant opacity-70">New name</span>
 					<!-- svelte-ignore a11y_autofocus -->
@@ -201,7 +187,6 @@
 					/>
 				</label>
 
-				<!-- Preview section -->
 				{#if newRelPath && newRelPath !== oldRelPath}
 					<div class="mb-3 rounded-lg bg-surface-container-low p-3">
 						<div class="flex items-center gap-2 text-xs text-on-surface-variant opacity-60">
@@ -212,49 +197,47 @@
 					</div>
 				{/if}
 
-				<!-- Link rewrite preview -->
-				{#if planning}
-					<p class="text-xs text-on-surface-variant opacity-40">Computing link rewrites…</p>
+				{#if !trimmedName}
+					<p class="text-xs text-on-surface-variant opacity-45">Enter a new name to preview the rename.</p>
+				{:else if newRelPath === oldRelPath}
+					<p class="text-xs text-on-surface-variant opacity-45">Choose a different name to preview the rename.</p>
+				{:else if planning}
+					<p class="text-xs text-on-surface-variant opacity-45">Checking the rename and computing affected link edits…</p>
 				{:else if planError}
-					<p class="text-xs text-red-400">{planError}</p>
+					<p class="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">{planError}</p>
 				{:else if plan}
-					{#if plan.edits.length === 0}
-						<p class="text-xs text-on-surface-variant opacity-50">No link rewrites required.</p>
-					{:else}
-						<div class="mb-1 text-xs font-medium text-on-surface-variant opacity-60">
-							{plan.edits.length}
-							{plan.edits.length === 1 ? 'link' : 'links'} will be updated across
-							{editsByFile.length}
-							{editsByFile.length === 1 ? 'file' : 'files'}:
+					<div class="space-y-3">
+						<div class="rounded-lg border border-outline-variant/15 bg-surface-container-low px-3 py-2 text-xs text-on-surface-variant opacity-75">
+							{#if plan.edits.length === 0}
+								Preview ready. No link rewrites are required.
+							{:else}
+								Preview ready. {plan.edits.length} {plan.edits.length === 1 ? 'link edit' : 'link edits'} will be applied across {editsByFile.length} {editsByFile.length === 1 ? 'file' : 'files'}.
+							{/if}
 						</div>
-						<div class="max-h-48 overflow-y-auto rounded-lg border border-outline-variant/15 bg-surface-container-low">
-							{#each editsByFile as { filePath, edits }}
-								<div class="border-b border-outline-variant/10 px-3 py-2 last:border-b-0">
-									<div class="mb-1.5 truncate text-xs font-medium text-on-surface opacity-70">
-										{filePath}
+
+						{#if plan.edits.length > 0}
+							<div class="max-h-56 overflow-y-auto rounded-lg border border-outline-variant/15 bg-surface-container-low">
+								{#each editsByFile as { filePath, edits }}
+									<div class="border-b border-outline-variant/10 px-3 py-2 last:border-b-0">
+										<div class="mb-1.5 truncate text-xs font-medium text-on-surface opacity-70">{filePath}</div>
+										{#each edits as edit}
+											<div class="mb-2 rounded-md bg-surface px-2 py-1.5 last:mb-0">
+												<div class="font-mono text-xs text-red-400/85">− {edit.before}</div>
+												<div class="mt-1 font-mono text-xs text-green-400/85">+ {edit.after}</div>
+											</div>
+										{/each}
 									</div>
-									{#each edits as edit}
-										<div class="mb-1 last:mb-0">
-											<div class="font-mono text-xs text-red-400/80">
-												− {edit.before}
-											</div>
-											<div class="font-mono text-xs text-green-400/80">
-												+ {edit.after}
-											</div>
-										</div>
-									{/each}
-								</div>
-							{/each}
-						</div>
-					{/if}
+								{/each}
+							</div>
+						{/if}
+					</div>
 				{/if}
 
 				{#if applyError}
-					<p class="mt-2 text-xs text-red-400">{applyError}</p>
+					<p class="mt-3 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">{applyError}</p>
 				{/if}
 			</div>
 
-			<!-- Footer -->
 			<div class="flex items-center justify-end gap-2 border-t border-outline-variant/15 px-5 py-3">
 				<button
 					type="button"
@@ -266,10 +249,10 @@
 				<button
 					type="button"
 					onclick={() => void applyRename()}
-					disabled={!plan || applying || !!planError || !newRelPath || newRelPath === oldRelPath}
-					class="rounded-lg bg-primary px-4 py-1.5 text-xs font-medium text-on-primary transition-opacity disabled:opacity-30 hover:opacity-90"
+					disabled={!canApply}
+					class="rounded-lg bg-primary px-4 py-1.5 text-xs font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-30"
 				>
-					{applying ? 'Renaming…' : 'Rename'}
+					{applying ? 'Renaming…' : 'Apply rename'}
 				</button>
 			</div>
 		</div>

@@ -106,8 +106,7 @@ impl Index {
         }
 
         // Insert frontmatter JSON blob.
-        let fm_json =
-            serde_json::to_string(&note.frontmatter).unwrap_or_else(|_| "{}".to_string());
+        let fm_json = serde_json::to_string(&note.frontmatter).unwrap_or_else(|_| "{}".to_string());
         tx.execute(
             "INSERT OR REPLACE INTO frontmatter (file_id, data) VALUES (?1, ?2)",
             params![id, fm_json],

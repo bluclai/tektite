@@ -168,6 +168,45 @@ function resizeSplitInTree(
   return { ...layout, a, b };
 }
 
+function renamePathValue(path: string, oldPath: string, newPath: string): string {
+  if (path === oldPath) {
+    return newPath;
+  }
+
+  const oldPrefix = `${oldPath}/`;
+  if (path.startsWith(oldPrefix)) {
+    return `${newPath}/${path.slice(oldPrefix.length)}`;
+  }
+
+  return path;
+}
+
+function renamePathsInTree(layout: PaneLayout, oldPath: string, newPath: string): PaneLayout {
+  if (layout.type === "leaf") {
+    let changed = false;
+    const tabs = layout.tabs.map((tab) => {
+      const nextPath = renamePathValue(tab.path, oldPath, newPath);
+      if (nextPath === tab.path) {
+        return tab;
+      }
+
+      changed = true;
+      return {
+        ...tab,
+        path: nextPath,
+        name: nameFromPath(nextPath),
+      };
+    });
+
+    return changed ? { ...layout, tabs } : layout;
+  }
+
+  const a = renamePathsInTree(layout.a, oldPath, newPath);
+  const b = renamePathsInTree(layout.b, oldPath, newPath);
+  if (a === layout.a && b === layout.b) return layout;
+  return { ...layout, a, b };
+}
+
 // ---------------------------------------------------------------------------
 // Workspace persistence shape (version-guarded)
 // ---------------------------------------------------------------------------
@@ -354,6 +393,11 @@ export const workspaceStore = {
   /** Commit final split sizes on drag end. */
   commitSplitResize(splitId: string, sizes: [number, number]) {
     this.resizeSplitImmediate(splitId, sizes);
+    scheduleSave();
+  },
+
+  renamePath(oldPath: string, newPath: string) {
+    _paneTree = renamePathsInTree(_paneTree, oldPath, newPath);
     scheduleSave();
   },
 

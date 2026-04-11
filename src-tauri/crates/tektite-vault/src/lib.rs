@@ -18,9 +18,16 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use walkdir::WalkDir;
 
-use tektite_index::Index;
+use tektite_index::{rewrite_content, Index};
 
 pub use tektite_index::{IndexError, RenameEdit, RenamePlan};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameOutcome {
+    pub old_path: String,
+    pub new_path: String,
+    pub changed_paths: Vec<String>,
+}
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -309,6 +316,7 @@ impl Vault {
     ///
     /// Supports both file renames (`.md` paths) and directory renames.
     pub fn plan_rename(&self, old_rel: &str, new_rel: &str) -> Result<RenamePlan, VaultError> {
+        self.validate_rename_paths(old_rel, new_rel)?;
         let index = self.index.as_ref().ok_or(VaultError::NotOpen)?;
         index
             .plan_rename(old_rel, new_rel)
@@ -317,10 +325,19 @@ impl Vault {
 
     /// Executes a [`RenamePlan`]: rewrites affected files, renames on disk,
     /// and updates the SQLite index.
-    pub fn apply_rename(&mut self, plan: &RenamePlan) -> Result<(), VaultError> {
+    pub fn apply_rename(&mut self, plan: &RenamePlan) -> Result<RenameOutcome, VaultError> {
         // Require an index.
         if self.index.is_none() {
             return Err(VaultError::NotOpen);
+        }
+
+        self.validate_rename_paths(&plan.old_path, &plan.new_path)?;
+
+        let fresh_plan = self.plan_rename(&plan.old_path, &plan.new_path)?;
+        if fresh_plan.edits != plan.edits {
+            return Err(VaultError::InvalidPath(
+                "Rename preview is stale. Preview the rename again before applying it.".to_string(),
+            ));
         }
 
         let is_dir_rename = !plan.old_path.ends_with(".md");
@@ -336,18 +353,19 @@ impl Vault {
     // Single-file rename
     // -----------------------------------------------------------------------
 
-    fn apply_file_rename(&mut self, plan: &RenamePlan) -> Result<(), VaultError> {
+    fn apply_file_rename(&mut self, plan: &RenamePlan) -> Result<RenameOutcome, VaultError> {
         // 1. Apply link text rewrites and write modified files.
         let mut rewrites: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
-        for edit in &plan.edits {
-            let current = rewrites
-                .get(&edit.file_path)
-                .cloned()
-                .unwrap_or_else(|| self.read_file(&edit.file_path).unwrap_or_default());
+        for path in plan.edits.iter().map(|edit| edit.file_path.as_str()) {
+            if rewrites.contains_key(path) {
+                continue;
+            }
+
+            let current = self.read_file(path)?;
             rewrites.insert(
-                edit.file_path.clone(),
-                current.replace(&edit.before, &edit.after),
+                path.to_string(),
+                rewrite_content(&current, path, &plan.edits),
             );
         }
         for (path, content) in &rewrites {
@@ -365,7 +383,7 @@ impl Vault {
         std::fs::rename(&old_abs, &new_abs)?;
 
         // 3. Build the re-index list.
-        let renamed_content = self.read_file(&plan.new_path).unwrap_or_default();
+        let renamed_content = self.read_file(&plan.new_path)?;
         let renamed_mtime = file_mtime(&new_abs);
         let mut modified: Vec<(String, i64, String)> =
             vec![(plan.new_path.clone(), renamed_mtime, renamed_content)];
@@ -383,14 +401,24 @@ impl Vault {
             &modified,
         )?;
 
-        Ok(())
+        let mut changed_paths: Vec<String> = rewrites.keys().cloned().collect();
+        if !changed_paths.iter().any(|path| path == &plan.new_path) {
+            changed_paths.push(plan.new_path.clone());
+        }
+        changed_paths.sort();
+
+        Ok(RenameOutcome {
+            old_path: plan.old_path.clone(),
+            new_path: plan.new_path.clone(),
+            changed_paths,
+        })
     }
 
     // -----------------------------------------------------------------------
     // Directory rename
     // -----------------------------------------------------------------------
 
-    fn apply_dir_rename(&mut self, plan: &RenamePlan) -> Result<(), VaultError> {
+    fn apply_dir_rename(&mut self, plan: &RenamePlan) -> Result<RenameOutcome, VaultError> {
         let old_abs = self.abs(&plan.old_path)?;
         let new_abs = self.abs(&plan.new_path)?;
 
@@ -422,14 +450,15 @@ impl Vault {
         // Apply link rewrites.
         let mut rewrites: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
-        for edit in &plan.edits {
-            let current = rewrites
-                .get(&edit.file_path)
-                .cloned()
-                .unwrap_or_else(|| self.read_file(&edit.file_path).unwrap_or_default());
+        for path in plan.edits.iter().map(|edit| edit.file_path.as_str()) {
+            if rewrites.contains_key(path) {
+                continue;
+            }
+
+            let current = self.read_file(path)?;
             rewrites.insert(
-                edit.file_path.clone(),
-                current.replace(&edit.before, &edit.after),
+                path.to_string(),
+                rewrite_content(&current, path, &plan.edits),
             );
         }
         for (path, content) in &rewrites {
@@ -440,12 +469,14 @@ impl Vault {
         if let Some(parent) = new_abs.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        self.write_tokens.insert(old_abs.clone());
+        self.write_tokens.insert(new_abs.clone());
         std::fs::rename(&old_abs, &new_abs)?;
 
         // Build re-index list: all files in the new location + rewritten files.
         let mut modified: Vec<(String, i64, String)> = Vec::new();
         for (_, new_path) in &file_entries {
-            let content = self.read_file(new_path).unwrap_or_default();
+            let content = self.read_file(new_path)?;
             let abs = self.abs(new_path)?;
             modified.push((new_path.clone(), file_mtime(&abs), content));
         }
@@ -466,7 +497,19 @@ impl Vault {
             &modified,
         )?;
 
-        Ok(())
+        let mut changed_paths: Vec<String> = rewrites.keys().cloned().collect();
+        for (_, new_path) in &file_entries {
+            if !changed_paths.iter().any(|path| path == new_path) {
+                changed_paths.push(new_path.clone());
+            }
+        }
+        changed_paths.sort();
+
+        Ok(RenameOutcome {
+            old_path: plan.old_path.clone(),
+            new_path: plan.new_path.clone(),
+            changed_paths,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -496,6 +539,39 @@ impl Vault {
             return Err(VaultError::OutsideRoot);
         }
         Ok(self.root.join(rel))
+    }
+
+    fn validate_rename_paths(&self, old_rel: &str, new_rel: &str) -> Result<(), VaultError> {
+        let old_abs = self.abs(old_rel)?;
+        let new_abs = self.abs(new_rel)?;
+
+        if old_rel == new_rel {
+            return Err(VaultError::InvalidPath(
+                "New name must be different from the current name".into(),
+            ));
+        }
+
+        if !old_abs.exists() {
+            return Err(VaultError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("path does not exist: {old_rel}"),
+            )));
+        }
+
+        if new_abs.exists() {
+            return Err(VaultError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("destination already exists: {new_rel}"),
+            )));
+        }
+
+        if old_abs.is_file() != new_rel.ends_with(".md") {
+            return Err(VaultError::InvalidPath(
+                "Markdown note renames must keep the .md extension".into(),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -559,7 +635,7 @@ fn existing_ancestor(path: &Path) -> &Path {
 
 #[cfg(test)]
 mod tests {
-    use super::{Vault, VaultError};
+    use super::{RenamePlan, Vault, VaultError};
 
     #[test]
     fn read_and_write_file_round_trip_inside_vault() {
@@ -616,5 +692,47 @@ mod tests {
         assert!(
             matches!(err, VaultError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists)
         );
+    }
+
+    #[test]
+    fn plan_rename_rejects_existing_destination() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut vault = Vault::open(dir.path()).expect("open vault");
+
+        std::fs::write(dir.path().join("old.md"), "# Old\n").unwrap();
+        std::fs::write(dir.path().join("new.md"), "# New\n").unwrap();
+        vault.scan_and_index().expect("scan vault");
+
+        let err = vault
+            .plan_rename("old.md", "new.md")
+            .expect_err("existing destination should fail");
+
+        assert!(
+            matches!(err, VaultError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists)
+        );
+    }
+
+    #[test]
+    fn apply_rename_rejects_stale_preview() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut vault = Vault::open(dir.path()).expect("open vault");
+
+        std::fs::write(dir.path().join("target.md"), "# Target\n").unwrap();
+        std::fs::write(dir.path().join("source.md"), "[[target]]\n").unwrap();
+        vault.scan_and_index().expect("scan vault");
+
+        let stale_plan = RenamePlan {
+            old_path: "target.md".to_string(),
+            new_path: "renamed.md".to_string(),
+            edits: vec![],
+        };
+
+        let err = vault
+            .apply_rename(&stale_plan)
+            .expect_err("stale preview should fail");
+
+        assert!(matches!(err, VaultError::InvalidPath(message) if message.contains("stale")));
+        assert!(dir.path().join("target.md").exists());
+        assert!(!dir.path().join("renamed.md").exists());
     }
 }

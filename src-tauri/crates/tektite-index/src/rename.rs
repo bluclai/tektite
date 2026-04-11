@@ -140,7 +140,13 @@ impl Index {
             }
 
             let new_target = determine_new_target(
-                target, old_stem, new_stem, old_path, new_path, source_path, self,
+                target,
+                old_stem,
+                new_stem,
+                old_path,
+                new_path,
+                source_path,
+                self,
             )?;
 
             // Skip if the rewrite produces no change.
@@ -180,11 +186,7 @@ impl Index {
     // Directory planning
     // -----------------------------------------------------------------------
 
-    fn plan_dir_rename(
-        &self,
-        old_dir: &str,
-        new_dir: &str,
-    ) -> Result<RenamePlan, IndexError> {
+    fn plan_dir_rename(&self, old_dir: &str, new_dir: &str) -> Result<RenamePlan, IndexError> {
         let old_prefix = normalize_dir_prefix(old_dir);
         let new_prefix = normalize_dir_prefix(new_dir);
 

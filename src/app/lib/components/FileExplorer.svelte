@@ -13,6 +13,12 @@
     import { vaultStore } from '$lib/stores/vault.svelte';
     import RenameDialog from '$lib/components/RenameDialog.svelte';
 
+    interface RenameResult {
+        old_path: string;
+        new_path: string;
+        changed_paths: string[];
+    }
+
     // ---------------------------------------------------------------------------
     // Collapse state
     // ---------------------------------------------------------------------------
@@ -152,6 +158,18 @@
         e.stopPropagation();
         renameTarget = entry;
         renameDialogOpen = true;
+    }
+
+    function handleRename(result: RenameResult) {
+        workspaceStore.renamePath(result.old_path, result.new_path);
+
+        const vaultRoot = vaultStore.path;
+        if (vaultRoot) {
+            workspaceStore.renamePath(`${vaultRoot}/${result.old_path}`, `${vaultRoot}/${result.new_path}`);
+        }
+
+        renameDialogOpen = false;
+        renameTarget = null;
     }
 </script>
 
@@ -331,8 +349,10 @@
     <RenameDialog
         bind:open={renameDialogOpen}
         oldRelPath={renameTarget.path}
-        vaultRoot={vaultStore.path ?? ''}
-        onRenamed={() => { renameTarget = null; }}
-        onClose={() => { renameTarget = null; }}
+        onRenamed={handleRename}
+        onClose={() => {
+            renameDialogOpen = false;
+            renameTarget = null;
+        }}
     />
 {/if}

@@ -8,7 +8,7 @@ use tauri::{Emitter, Manager, State};
 use tektite_index::{BacklinkRow, FuzzyFileRow, HeadingSearchRow};
 use tektite_search::SearchResult;
 use tektite_vault::watcher::WatcherHandle;
-use tektite_vault::{RenamePlan, Vault, VaultError, VaultTreeEntry};
+use tektite_vault::{RenameOutcome, RenamePlan, Vault, VaultError, VaultTreeEntry};
 
 // ---------------------------------------------------------------------------
 // Managed state types
@@ -28,6 +28,13 @@ struct WatcherState(Mutex<Option<WatcherHandle>>);
 #[derive(Debug, Serialize, Clone)]
 struct VaultFilesChangedPayload {
     paths: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct RenameResult {
+    old_path: String,
+    new_path: String,
+    changed_paths: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -290,10 +297,38 @@ fn vault_plan_rename(
 /// Executes a previously computed [`RenamePlan`]: rewrites affected files,
 /// renames the target on disk, and updates the index.
 #[tauri::command]
-fn vault_apply_rename(plan: RenamePlan, vault_state: State<VaultState>) -> Result<(), String> {
-    let mut guard = vault_state.0.lock().unwrap();
-    let vault = guard.as_mut().ok_or("No vault open")?;
-    vault.apply_rename(&plan).map_err(ve)
+fn vault_apply_rename(
+    app: tauri::AppHandle,
+    plan: RenamePlan,
+    vault_state: State<VaultState>,
+) -> Result<RenameResult, String> {
+    let outcome = {
+        let mut guard = vault_state.0.lock().unwrap();
+        let vault = guard.as_mut().ok_or("No vault open")?;
+        vault.apply_rename(&plan).map_err(ve)?
+    };
+
+    let RenameOutcome {
+        old_path,
+        new_path,
+        changed_paths,
+    } = outcome;
+
+    let _ = app.emit("file-tree-updated", ());
+    if !changed_paths.is_empty() {
+        let _ = app.emit(
+            "vault-files-changed",
+            VaultFilesChangedPayload {
+                paths: changed_paths.clone(),
+            },
+        );
+    }
+
+    Ok(RenameResult {
+        old_path,
+        new_path,
+        changed_paths,
+    })
 }
 
 // ---------------------------------------------------------------------------
