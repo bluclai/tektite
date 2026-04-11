@@ -35,6 +35,7 @@ import { autocompletion, CompletionContext } from "@codemirror/autocomplete";
 import { StateField, StateEffect, RangeSetBuilder } from "@codemirror/state";
 import { EditorView, Decoration, ViewPlugin, ViewUpdate, keymap } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
+import { filesStore } from "$lib/stores/files.svelte";
 
 // ---------------------------------------------------------------------------
 // IPC types (mirrors Rust LinkResolutionResult + index commands)
@@ -404,6 +405,34 @@ const setLinkHandlers = StateEffect.define<LinkHandlers | null>();
 // Follow command
 // ---------------------------------------------------------------------------
 
+function rootNotePathForTarget(target: string): string | null {
+  const trimmed = target.trim();
+  if (!trimmed) return null;
+
+  const base = trimmed.split("/").filter(Boolean).pop();
+  if (!base || base === "." || base === "..") return null;
+
+  return base.toLowerCase().endsWith(".md") ? base : `${base}.md`;
+}
+
+async function createRootNoteForUnresolvedLink(target: string, handlers: LinkHandlers): Promise<boolean> {
+  const relPath = rootNotePathForTarget(target);
+  if (!relPath) return false;
+
+  try {
+    await invoke("files_create_file", { relPath });
+    await filesStore.refresh();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    if (!message.toLowerCase().includes("already exists")) {
+      return false;
+    }
+  }
+
+  handlers.onFollow(relPath);
+  return true;
+}
+
 async function followLinkAtCursor(view: EditorView): Promise<boolean> {
   const { head } = view.state.selection.main;
   const link = wikiLinkAt(view.state, head);
@@ -424,8 +453,8 @@ async function followLinkAtCursor(view: EditorView): Promise<boolean> {
     handlers.onAmbiguous(link.target, resolution.paths);
     return true;
   }
-  // Unresolved — do nothing (could open create-note dialog in future)
-  return true;
+
+  return createRootNoteForUnresolvedLink(link.target, handlers);
 }
 
 // ---------------------------------------------------------------------------
@@ -453,11 +482,13 @@ const clickHandler = EditorView.domEventHandlers({
     void invoke<LinkResolutionResult>("index_resolve_link", {
       target: link.target,
       sourcePath: handlers.sourcePath ?? null,
-    }).then((resolution) => {
+    }).then(async (resolution) => {
       if (resolution.kind === "resolved") {
         handlers.onFollow(resolution.path);
       } else if (resolution.kind === "ambiguous") {
         handlers.onAmbiguous(link.target, resolution.paths);
+      } else {
+        await createRootNoteForUnresolvedLink(link.target, handlers);
       }
     });
 
@@ -474,7 +505,7 @@ const pointerCursorTheme = EditorView.theme({
     cursor: "pointer",
   },
   ".cm-wl-unresolved": {
-    cursor: "default",
+    cursor: "pointer",
   },
 });
 
