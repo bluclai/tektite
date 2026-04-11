@@ -16,9 +16,15 @@
 
 	const activeTab = $derived(pane.tabs.find((t) => t.id === pane.activeTabId) ?? null);
 
-	const absolutePath = $derived(
-		activeTab && vaultStore.path ? `${vaultStore.path}/${activeTab.path}` : null,
-	);
+	const absolutePath = $derived.by(() => {
+		if (!activeTab) return null;
+
+		const tabPath = activeTab.path;
+		const vaultRoot = vaultStore.path;
+		if (!vaultRoot) return tabPath;
+
+		return tabPath.startsWith(vaultRoot + '/') ? tabPath : `${vaultRoot}/${tabPath}`;
+	});
 
 	function onSplitRight() {
 		workspaceStore.splitPane(pane.id, 'horizontal');
