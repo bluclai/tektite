@@ -273,10 +273,22 @@ fn files_create_folder(
 }
 
 #[tauri::command]
-fn files_delete(rel_path: String, vault_state: State<VaultState>) -> Result<(), String> {
-    let guard = vault_state.0.lock().unwrap();
-    let vault = guard.as_ref().ok_or("No vault open")?;
-    vault.delete(&rel_path).map_err(ve)
+fn files_delete(rel_path: String, vault_state: State<VaultState>) -> Result<Vec<VaultTreeEntry>, String> {
+    let mut guard = vault_state.0.lock().unwrap();
+    let vault = guard.as_mut().ok_or("No vault open")?;
+
+    // Remove from index *before* deleting from disk so the index cannot
+    // end up with a dangling entry (the watcher will also fire later,
+    // making this idempotent).
+    let abs = vault.absolute_path(&rel_path).map_err(ve)?;
+    let _ = vault.remove_from_index(&abs);
+
+    // Register a write token so the watcher suppresses the delete event
+    // and doesn't redundantly try to remove from index.
+    vault.write_tokens.insert(abs.clone());
+
+    vault.delete(&rel_path).map_err(ve)?;
+    vault.get_tree().map_err(ve)
 }
 
 // ---------------------------------------------------------------------------

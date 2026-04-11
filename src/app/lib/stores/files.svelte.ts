@@ -110,10 +110,10 @@ export const filesStore = {
     applyTree(tree);
   },
 
-  /** Delete a file or folder at a vault-relative path and refresh. */
+  /** Delete a file or folder at a vault-relative path and apply the backend tree snapshot. */
   async delete(relPath: string): Promise<void> {
-    await invoke<void>("files_delete", { relPath });
-    await filesStore.refresh();
+    const tree = await invoke<TreeEntry[]>("files_delete", { relPath });
+    applyTree(tree);
   },
 
   /**

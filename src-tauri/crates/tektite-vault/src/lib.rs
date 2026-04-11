@@ -744,4 +744,38 @@ mod tests {
         assert!(dir.path().join("target.md").exists());
         assert!(!dir.path().join("renamed.md").exists());
     }
+
+    #[test]
+    fn delete_removes_file_and_index_entry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut vault = Vault::open(dir.path()).expect("open vault");
+
+        std::fs::write(dir.path().join("g.md"), "# Gone\n").unwrap();
+        vault.scan_and_index().expect("scan vault");
+
+        // Confirm it's indexed.
+        let id = vault
+            .index
+            .as_ref()
+            .unwrap()
+            .id_for_path("g.md")
+            .expect("index reachable");
+        assert!(id.is_some(), "file must be indexed before delete");
+
+        let abs = vault.absolute_path("g.md").expect("resolve path");
+        vault.remove_from_index(&abs).expect("remove from index");
+        vault.delete("g.md").expect("delete file");
+
+        // File gone from disk.
+        assert!(!dir.path().join("g.md").exists(), "file must be removed");
+
+        // Entry gone from index.
+        let still_there = vault
+            .index
+            .as_ref()
+            .unwrap()
+            .id_for_path("g.md")
+            .expect("index reachable");
+        assert!(still_there.is_none(), "index entry must be cleared after delete");
+    }
 }
