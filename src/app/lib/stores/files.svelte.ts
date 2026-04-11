@@ -96,8 +96,11 @@ export const filesStore = {
   },
 
   /** Create a new markdown file at a vault-relative path and apply the backend tree snapshot. */
-  async createFile(relPath: string): Promise<void> {
-    const tree = await invoke<TreeEntry[]>("files_create_file", { relPath });
+  async createFile(relPath: string, initialContent?: string): Promise<void> {
+    const tree = await invoke<TreeEntry[]>("files_create_file", {
+      relPath,
+      initialContent: initialContent ?? null,
+    });
     applyTree(tree);
   },
 

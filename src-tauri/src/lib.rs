@@ -244,11 +244,14 @@ fn files_get_tree(vault_state: State<VaultState>) -> Result<Vec<VaultTreeEntry>,
 #[tauri::command]
 fn files_create_file(
     rel_path: String,
+    initial_content: Option<String>,
     vault_state: State<VaultState>,
 ) -> Result<Vec<VaultTreeEntry>, String> {
     let mut guard = vault_state.0.lock().unwrap();
     let vault = guard.as_mut().ok_or("No vault open")?;
-    vault.create_file(&rel_path).map_err(ve)?;
+    vault
+        .create_file(&rel_path, initial_content.as_deref())
+        .map_err(ve)?;
 
     let abs = vault.absolute_path(&rel_path).map_err(ve)?;
     if let Err(error) = vault.reindex_file(&abs) {

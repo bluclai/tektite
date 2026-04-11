@@ -149,9 +149,14 @@ impl Vault {
         scan::build_tree(&self.root)
     }
 
-    /// Creates a new empty markdown file. Parent directories are created as needed.
-    /// The write is registered in the write-token set.
-    pub fn create_file(&self, rel_path: &str) -> Result<(), VaultError> {
+    /// Creates a new markdown file, optionally seeding it with `initial_content`.
+    /// Parent directories are created as needed. The write is registered in the
+    /// write-token set.
+    pub fn create_file(
+        &self,
+        rel_path: &str,
+        initial_content: Option<&str>,
+    ) -> Result<(), VaultError> {
         let abs = self.abs(rel_path)?;
         if abs.exists() {
             return Err(VaultError::Io(std::io::Error::new(
@@ -163,12 +168,16 @@ impl Vault {
             std::fs::create_dir_all(parent)?;
         }
         self.write_tokens.insert(abs.clone());
-        std::fs::OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&abs)
-            .map(|_| ())
-            .map_err(VaultError::Io)
+            .map_err(VaultError::Io)?;
+        if let Some(content) = initial_content {
+            use std::io::Write;
+            file.write_all(content.as_bytes()).map_err(VaultError::Io)?;
+        }
+        Ok(())
     }
 
     /// Creates a directory (and all intermediate directories).
@@ -670,7 +679,7 @@ mod tests {
         let vault = Vault::open(dir.path()).expect("open vault");
 
         let err = vault
-            .create_file("notes//today.md")
+            .create_file("notes//today.md", None)
             .expect_err("invalid path should fail");
 
         assert!(matches!(err, VaultError::InvalidPath(_)));
@@ -682,11 +691,11 @@ mod tests {
         let vault = Vault::open(dir.path()).expect("open vault");
 
         vault
-            .create_file("notes/today.md")
+            .create_file("notes/today.md", None)
             .expect("first create succeeds");
 
         let err = vault
-            .create_file("notes/today.md")
+            .create_file("notes/today.md", None)
             .expect_err("duplicate create should fail");
 
         assert!(

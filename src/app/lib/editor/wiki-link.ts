@@ -415,12 +415,32 @@ function rootNotePathForTarget(target: string): string | null {
   return base.toLowerCase().endsWith(".md") ? base : `${base}.md`;
 }
 
+/**
+ * Derives the initial `# Heading` content for a note created from an
+ * unresolved wiki-link. Uses the link's base name (sans `.md`) so the
+ * heading matches the file's displayed title in the sidebar.
+ */
+function initialContentForTarget(target: string): string | null {
+  const trimmed = target.trim();
+  if (!trimmed) return null;
+
+  const base = trimmed.split("/").filter(Boolean).pop();
+  if (!base || base === "." || base === "..") return null;
+
+  const title = base.replace(/\.md$/i, "").trim();
+  if (!title) return null;
+
+  return `# ${title}\n\n`;
+}
+
 async function createRootNoteForUnresolvedLink(target: string, handlers: LinkHandlers): Promise<boolean> {
   const relPath = rootNotePathForTarget(target);
   if (!relPath) return false;
 
+  const initialContent = initialContentForTarget(target);
+
   try {
-    await invoke("files_create_file", { relPath });
+    await invoke("files_create_file", { relPath, initialContent });
     await filesStore.refresh();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error ?? "");
