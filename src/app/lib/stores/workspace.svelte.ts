@@ -317,6 +317,13 @@ export const workspaceStore = {
     return _activePaneId;
   },
 
+  /** Vault-relative path of the active tab in the active pane, or null if none. */
+  get activeFilePath(): string | null {
+    const leaf = allLeaves(_paneTree).find((l) => l.id === _activePaneId) ?? null;
+    if (!leaf || !leaf.activeTabId) return null;
+    return leaf.tabs.find((t) => t.id === leaf.activeTabId)?.path ?? null;
+  },
+
   setActivePane(paneId: string) {
     _activePaneId = paneId;
     scheduleSave();

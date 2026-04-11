@@ -14,6 +14,12 @@
     let { children }: Props = $props();
     let commandPaletteOpen = $state(false);
 
+    const titlebarTitle = $derived.by(() => {
+        const p = workspaceStore.activeFilePath;
+        if (!p) return '';
+        return p.split('/').pop()?.replace(/\.md$/i, '') ?? '';
+    });
+
     function onKeydown(e: KeyboardEvent) {
         // Ctrl+K / Cmd+K — open/close command palette
         if (e.key === "k" && (e.ctrlKey || e.metaKey)) {
@@ -41,7 +47,7 @@
 <svelte:window onkeydown={onKeydown} />
 
 <div class="flex h-full flex-col overflow-hidden">
-    <Titlebar />
+    <Titlebar title={titlebarTitle} />
     <div class="flex flex-1 overflow-hidden">
         <ActivityBar />
         <Sidebar />
