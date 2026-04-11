@@ -62,7 +62,7 @@
 			<div class="border-b border-outline-variant/15 px-5 py-4">
 				<h2 class="text-sm font-medium text-on-surface">Ambiguous link</h2>
 				<p class="mt-0.5 text-xs text-on-surface-variant opacity-50">
-					<span class="font-mono">[[{target}]]</span> matches multiple notes. Choose one to open:
+					<span class="font-mono">[[{target}]]</span> matches multiple notes, so Tektite did not guess. Choose one to open:
 				</p>
 			</div>
 

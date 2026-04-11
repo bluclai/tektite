@@ -55,6 +55,7 @@ pub type NoteId = String;
 pub struct Index {
     conn: Connection,
     /// When `true`, proximity tiebreaking is used during link resolution.
+    /// v0.1 keeps this off by default so ambiguous links surface intentionally.
     pub proximity_enabled: bool,
 }
 
@@ -66,7 +67,7 @@ impl Index {
         let conn = Connection::open(path)?;
         let mut index = Self {
             conn,
-            proximity_enabled: true,
+            proximity_enabled: false,
         };
         // Foreign-key enforcement must be enabled per-connection in SQLite.
         index.conn.execute_batch("PRAGMA foreign_keys = ON;")?;
@@ -79,7 +80,7 @@ impl Index {
         let conn = Connection::open_in_memory()?;
         let mut index = Self {
             conn,
-            proximity_enabled: true,
+            proximity_enabled: false,
         };
         // Foreign-key enforcement must be enabled per-connection in SQLite.
         index.conn.execute_batch("PRAGMA foreign_keys = ON;")?;

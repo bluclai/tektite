@@ -116,6 +116,18 @@ impl Index {
             .ok())
     }
 
+    /// Returns the vault-relative path for a note ID, or `None` if not indexed.
+    pub fn path_for_id(&self, note_id: &str) -> Result<Option<String>, IndexError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT path FROM files WHERE id = ?1",
+                params![note_id],
+                |row| row.get(0),
+            )
+            .ok())
+    }
+
     /// Returns all headings for a file.
     pub fn get_headings(&self, file_id: &str) -> Result<Vec<HeadingRecord>, IndexError> {
         let mut stmt = self
@@ -272,6 +284,27 @@ impl Index {
              WHERE LOWER(path) LIKE LOWER(?1)",
         )?;
         let rows = stmt.query_map(params![pattern], |row| {
+            Ok(FileRecord {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                mtime_secs: row.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Returns files whose vault-relative markdown path exactly matches a
+    /// path-qualified wiki-link target (case-insensitive).
+    ///
+    /// `target` is the wiki-link target text without the `.md` extension,
+    /// e.g. `folder/note`.
+    pub fn files_by_link_target_path(&self, target: &str) -> Result<Vec<FileRecord>, IndexError> {
+        let path = format!("{}.md", target.trim_matches('/'));
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, mtime_secs FROM files
+             WHERE LOWER(path) = LOWER(?1)",
+        )?;
+        let rows = stmt.query_map(params![path], |row| {
             Ok(FileRecord {
                 id: row.get(0)?,
                 path: row.get(1)?,

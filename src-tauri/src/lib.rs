@@ -332,14 +332,10 @@ fn index_resolve_link(
         .resolve_link(&target, source_path.as_deref())
         .map_err(|e| e.to_string())?;
 
-    // We need NoteId → path mapping for the result.
     let id_to_path = |id: &str| -> Result<String, String> {
-        // Look up the path from the index's all_files query.
-        let files = index.all_files().map_err(|e| e.to_string())?;
-        files
-            .into_iter()
-            .find(|f| f.id == id)
-            .map(|f| f.path)
+        index
+            .path_for_id(id)
+            .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Note ID {} not found", id))
     };
 
@@ -350,8 +346,12 @@ fn index_resolve_link(
         }
         LinkResolution::Unresolved => LinkResolutionResult::Unresolved,
         LinkResolution::Ambiguous(ids) => {
-            let paths: Result<Vec<_>, _> = ids.iter().map(|id| id_to_path(id)).collect();
-            LinkResolutionResult::Ambiguous { paths: paths? }
+            let mut paths: Vec<_> = ids
+                .iter()
+                .map(|id| id_to_path(id))
+                .collect::<Result<Vec<_>, _>>()?;
+            paths.sort();
+            LinkResolutionResult::Ambiguous { paths }
         }
     };
 
