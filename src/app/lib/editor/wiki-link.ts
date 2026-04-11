@@ -434,9 +434,9 @@ async function followLinkAtCursor(view: EditorView): Promise<boolean> {
 
 const clickHandler = EditorView.domEventHandlers({
   mousedown(event, view) {
-    // Only primary (left) button with an explicit follow modifier.
+    // Follow on normal primary click for v0.1. This keeps wiki-links feeling
+    // like links instead of hidden power-user affordances.
     if (event.button !== 0) return false;
-    if (!event.metaKey && !event.ctrlKey) return false;
 
     const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
     if (pos === null) return false;
