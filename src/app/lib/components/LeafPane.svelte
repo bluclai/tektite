@@ -64,8 +64,8 @@
 				Key on the tab ID so EditorPane is destroyed + recreated on tab switch
 				giving each tab its own CM6 EditorView and independent undo history.
 			-->
-			{#key `${pane.activeTabId ?? 'none'}:${workspaceStore.previewMode ? 'preview' : 'source'}`}
-				<EditorPane path={absolutePath} previewMode={workspaceStore.previewMode} />
+			{#key pane.activeTabId ?? 'none'}
+				<EditorPane path={absolutePath} />
 			{/key}
 		{/if}
 	</div>

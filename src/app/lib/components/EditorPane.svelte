@@ -26,7 +26,6 @@
 
     import { clayTheme } from '$lib/editor/theme';
     import { wikiLinkExtension, wikiLinkAutocomplete } from '$lib/editor/wiki-link';
-    import { livePreviewExtension } from '$lib/editor/live-preview';
     import { editorStore } from '$lib/stores/editor.svelte';
     import { vaultStore } from '$lib/stores/vault.svelte';
     import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -39,11 +38,9 @@
     interface Props {
         /** Absolute filesystem path — passed directly to read/write commands. */
         path: string;
-        /** Explicit reactive preview-mode prop from parent pane. */
-        previewMode?: boolean;
     }
 
-    let { path, previewMode = false }: Props = $props();
+    let { path }: Props = $props();
 
     // ---------------------------------------------------------------------------
     // DOM ref
@@ -65,13 +62,10 @@
     // without reconstructing the full EditorState.
     // ---------------------------------------------------------------------------
 
-    /** Slot for wiki-link syntax + decorations (Phase 7). */
+    /** Slot for wiki-link syntax + decorations. */
     export const wikiLinkCompartment = new Compartment();
 
-    /** Slot for live preview decorations (Phase 10). */
-    export const livePreviewCompartment = new Compartment();
-
-    /** Slot for autocomplete sources (Phase 7+). */
+    /** Slot for autocomplete sources. */
     export const autocompleteCompartment = new Compartment();
 
     // ---------------------------------------------------------------------------
@@ -300,9 +294,8 @@
             // Save keybinding (Mod-s) — before the default keymap
             saveKeymap,
 
-            // --- Future compartments (start empty) ---
+            // --- Reconfigurable compartments (start empty) ---
             wikiLinkCompartment.of([]),
-            livePreviewCompartment.of([]),
             autocompleteCompartment.of([autocompletion()]),
 
             // --- Save listener ---
@@ -369,9 +362,6 @@
                             },
                         }),
                     ),
-                    livePreviewCompartment.reconfigure(
-                        previewMode ? livePreviewExtension() : [],
-                    ),
                     autocompleteCompartment.reconfigure(wikiLinkAutocomplete()),
                 ],
             });
@@ -396,10 +386,8 @@
     });
 
     // ---------------------------------------------------------------------------
-    // Reactive: path and preview mode changes are handled by the parent keying
-    // this component on both active tab ID and preview mode. We intentionally
-    // remount the editor on preview toggle because it's the smallest reliable
-    // path and avoids subtle CM6 reconfigure failures.
+    // Reactive: path changes are handled by the parent keying this component
+    // on the active tab ID, giving each tab its own EditorView instance.
     // ---------------------------------------------------------------------------
 </script>
 

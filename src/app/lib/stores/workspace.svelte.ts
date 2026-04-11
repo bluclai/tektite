@@ -237,7 +237,6 @@ let _sidebarOpen = $state<boolean>(true);
 let _sidebarWidth = $state<number>(SIDEBAR_DEFAULT_WIDTH);
 let _activePaneId = $state<string>(_initialLeaf.id);
 let _paneTree = $state<PaneLayout>(_initialLeaf);
-let _previewMode = $state<boolean>(false);
 
 // ---------------------------------------------------------------------------
 // Debounced persistence
@@ -267,15 +266,6 @@ function scheduleSave() {
 // ---------------------------------------------------------------------------
 
 export const workspaceStore = {
-  // --- Preview mode ---
-  get previewMode() {
-    return _previewMode;
-  },
-
-  togglePreviewMode() {
-    _previewMode = !_previewMode;
-  },
-
   // --- Sidebar ---
   get activePanel() {
     return _activePanel;

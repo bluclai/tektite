@@ -34,12 +34,7 @@
             return;
         }
 
-        // Ctrl+Shift+L / Cmd+Shift+L — toggle source/live preview mode
-        if (e.key.toLowerCase() === "l" && (e.ctrlKey || e.metaKey) && e.shiftKey) {
-            e.preventDefault();
-            workspaceStore.togglePreviewMode();
-            return;
-        }
+
     }
 </script>
 
