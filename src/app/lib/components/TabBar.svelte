@@ -13,9 +13,11 @@
 		onclose: (tabId: string) => void;
 		onSplitRight: () => void;
 		onSplitDown: () => void;
+		onCloseOthers: (tabId: string) => void;
+		onCloseRight: (tabId: string) => void;
 	}
 
-	let { tabs, activeTabId, paneId, isActive, onactivate, onclose, onSplitRight, onSplitDown }: Props =
+	let { tabs, activeTabId, paneId, isActive, onactivate, onclose, onSplitRight, onSplitDown, onCloseOthers, onCloseRight }: Props =
 		$props();
 
 	let stripEl = $state<HTMLElement | null>(null);
@@ -66,6 +68,8 @@
 					onclose={() => onclose(tab.id)}
 					{onSplitRight}
 					{onSplitDown}
+					onCloseOthers={() => onCloseOthers(tab.id)}
+					onCloseRight={() => onCloseRight(tab.id)}
 				/>
 			</div>
 		{/each}

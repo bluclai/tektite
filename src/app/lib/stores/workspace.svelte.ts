@@ -1,211 +1,33 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  type PaneTab,
+  type LeafPane,
+  type SplitPane,
+  type PaneLayout,
+  nameFromPath,
+  makeTab,
+  makeLeaf,
+  leafOpenTab,
+  leafCloseTab,
+  leafActivateTab,
+  mapLeaf,
+  firstLeafId,
+  allLeaves,
+  splitLayout,
+  removePane,
+  resizeSplitInTree,
+  renamePathsInTree,
+} from "./workspace-tree";
+
+// Re-export types so existing consumers don't need to change imports
+export type { PaneTab, LeafPane, SplitPane, PaneLayout };
+export { allLeaves };
 
 // ---------------------------------------------------------------------------
 // Panel (sidebar)
 // ---------------------------------------------------------------------------
 
 export type Panel = "files" | "search" | "backlinks" | "settings";
-
-// ---------------------------------------------------------------------------
-// Pane types
-// ---------------------------------------------------------------------------
-
-export interface PaneTab {
-  id: string;
-  path: string;
-  /** Filename extracted from path for display */
-  name: string;
-}
-
-export interface LeafPane {
-  type: "leaf";
-  id: string;
-  tabs: PaneTab[];
-  activeTabId: string | null;
-}
-
-export interface SplitPane {
-  type: "split";
-  id: string;
-  direction: "horizontal" | "vertical";
-  a: PaneLayout;
-  b: PaneLayout;
-  /** Percentages [aSize, bSize]; should sum to 100 */
-  sizes: [number, number];
-}
-
-export type PaneLayout = LeafPane | SplitPane;
-
-// ---------------------------------------------------------------------------
-// Factory helpers
-// ---------------------------------------------------------------------------
-
-function nameFromPath(path: string): string {
-  return path.split("/").pop() ?? path.split("\\").pop() ?? path;
-}
-
-function makeTab(path: string): PaneTab {
-  return { id: crypto.randomUUID(), path, name: nameFromPath(path) };
-}
-
-function makeLeaf(): LeafPane {
-  return { type: "leaf", id: crypto.randomUUID(), tabs: [], activeTabId: null };
-}
-
-// ---------------------------------------------------------------------------
-// Pure transforms over LeafPane
-// ---------------------------------------------------------------------------
-
-function leafOpenTab(pane: LeafPane, path: string): LeafPane {
-  const existing = pane.tabs.find((t) => t.path === path);
-  if (existing) return { ...pane, activeTabId: existing.id };
-  const tab = makeTab(path);
-  return { ...pane, tabs: [...pane.tabs, tab], activeTabId: tab.id };
-}
-
-function leafCloseTab(pane: LeafPane, tabId: string): LeafPane {
-  const idx = pane.tabs.findIndex((t) => t.id === tabId);
-  if (idx === -1) return pane;
-  const tabs = pane.tabs.filter((t) => t.id !== tabId);
-  let activeTabId = pane.activeTabId;
-  if (activeTabId === tabId) {
-    const next = tabs[idx] ?? tabs[idx - 1] ?? null;
-    activeTabId = next?.id ?? null;
-  }
-  return { ...pane, tabs, activeTabId };
-}
-
-function leafActivateTab(pane: LeafPane, tabId: string): LeafPane {
-  return { ...pane, activeTabId: tabId };
-}
-
-// ---------------------------------------------------------------------------
-// Pure transforms over PaneLayout
-// ---------------------------------------------------------------------------
-
-/** Apply an updater to the matching leaf. Returns new tree (structurally shared). */
-function mapLeaf(
-  layout: PaneLayout,
-  paneId: string,
-  updater: (p: LeafPane) => LeafPane,
-): PaneLayout {
-  if (layout.type === "leaf") {
-    return layout.id === paneId ? updater(layout) : layout;
-  }
-  const a = mapLeaf(layout.a, paneId, updater);
-  const b = mapLeaf(layout.b, paneId, updater);
-  if (a === layout.a && b === layout.b) return layout;
-  return { ...layout, a, b };
-}
-
-/** ID of the leftmost leaf — used as fallback active pane. */
-function firstLeafId(layout: PaneLayout): string {
-  if (layout.type === "leaf") return layout.id;
-  return firstLeafId(layout.a);
-}
-
-/** Collect all leaf panes in left-to-right order. */
-export function allLeaves(layout: PaneLayout): LeafPane[] {
-  if (layout.type === "leaf") return [layout];
-  return [...allLeaves(layout.a), ...allLeaves(layout.b)];
-}
-
-/**
- * Split the target leaf into a SplitPane. Returns [newTree, newLeafId].
- * Returns null if the target was not found.
- */
-function splitLayout(
-  layout: PaneLayout,
-  targetId: string,
-  direction: "horizontal" | "vertical",
-): [PaneLayout, string] | null {
-  if (layout.type === "leaf") {
-    if (layout.id !== targetId) return null;
-    const newLeaf = makeLeaf();
-    const split: SplitPane = {
-      type: "split",
-      id: crypto.randomUUID(),
-      direction,
-      a: layout,
-      b: newLeaf,
-      sizes: [50, 50],
-    };
-    return [split, newLeaf.id];
-  }
-  const resA = splitLayout(layout.a, targetId, direction);
-  if (resA) return [{ ...layout, a: resA[0] }, resA[1]];
-  const resB = splitLayout(layout.b, targetId, direction);
-  if (resB) return [{ ...layout, b: resB[0] }, resB[1]];
-  return null;
-}
-
-/**
- * Remove a pane from the tree, collapsing the parent SplitPane into the
- * surviving sibling. Returns null if the whole tree was the removed pane.
- */
-function removePane(layout: PaneLayout, paneId: string): PaneLayout | null {
-  if (layout.type === "leaf") {
-    return layout.id === paneId ? null : layout;
-  }
-  const a = removePane(layout.a, paneId);
-  const b = removePane(layout.b, paneId);
-  if (a === null) return b;
-  if (b === null) return a;
-  return { ...layout, a, b };
-}
-
-/** Update sizes on a specific SplitPane by its ID. */
-function resizeSplitInTree(
-  layout: PaneLayout,
-  splitId: string,
-  sizes: [number, number],
-): PaneLayout {
-  if (layout.type === "leaf") return layout;
-  if (layout.id === splitId) return { ...layout, sizes };
-  const a = resizeSplitInTree(layout.a, splitId, sizes);
-  const b = resizeSplitInTree(layout.b, splitId, sizes);
-  if (a === layout.a && b === layout.b) return layout;
-  return { ...layout, a, b };
-}
-
-function renamePathValue(path: string, oldPath: string, newPath: string): string {
-  if (path === oldPath) {
-    return newPath;
-  }
-
-  const oldPrefix = `${oldPath}/`;
-  if (path.startsWith(oldPrefix)) {
-    return `${newPath}/${path.slice(oldPrefix.length)}`;
-  }
-
-  return path;
-}
-
-function renamePathsInTree(layout: PaneLayout, oldPath: string, newPath: string): PaneLayout {
-  if (layout.type === "leaf") {
-    let changed = false;
-    const tabs = layout.tabs.map((tab) => {
-      const nextPath = renamePathValue(tab.path, oldPath, newPath);
-      if (nextPath === tab.path) {
-        return tab;
-      }
-
-      changed = true;
-      return {
-        ...tab,
-        path: nextPath,
-        name: nameFromPath(nextPath),
-      };
-    });
-
-    return changed ? { ...layout, tabs } : layout;
-  }
-
-  const a = renamePathsInTree(layout.a, oldPath, newPath);
-  const b = renamePathsInTree(layout.b, oldPath, newPath);
-  if (a === layout.a && b === layout.b) return layout;
-  return { ...layout, a, b };
-}
 
 // ---------------------------------------------------------------------------
 // Workspace persistence shape (version-guarded)
@@ -368,6 +190,31 @@ export const workspaceStore = {
     scheduleSave();
   },
 
+  /** Close all tabs in the pane except the one with keepTabId. */
+  closeOtherTabs(paneId: string, keepTabId: string) {
+    _paneTree = mapLeaf(_paneTree, paneId, (p) => {
+      const tabs = p.tabs.filter((t) => t.id === keepTabId);
+ return { ...p, tabs, activeTabId: keepTabId };
+    });
+    scheduleSave();
+  },
+
+  /** Close all tabs to the right of the tab with tabId. */
+  closeTabsToRight(paneId: string, tabId: string) {
+    _paneTree = mapLeaf(_paneTree, paneId, (p) => {
+      const idx = p.tabs.findIndex((t) => t.id === tabId);
+      if (idx === -1) return p;
+      const tabs = p.tabs.slice(0, idx + 1);
+      const activeStillOpen = tabs.some((t) => t.id === p.activeTabId);
+      return {
+        ...p,
+        tabs,
+        activeTabId: activeStillOpen ? p.activeTabId : tabId,
+      };
+    });
+    scheduleSave();
+  },
+
   activateTab(paneId: string, tabId: string) {
     _paneTree = mapLeaf(_paneTree, paneId, (p) => leafActivateTab(p, tabId));
     _activePaneId = paneId;
@@ -401,6 +248,96 @@ export const workspaceStore = {
 
   renamePath(oldPath: string, newPath: string) {
     _paneTree = renamePathsInTree(_paneTree, oldPath, newPath);
+    scheduleSave();
+  },
+
+  /** Close all tabs across all panes that match a given path. */
+  closeTabsByPath(path: string) {
+    function closeInLeaf(leaf: LeafPane): LeafPane {
+      const tabs = leaf.tabs.filter((t) => t.path !== path);
+      const activeStillOpen = tabs.some((t) => t.id === leaf.activeTabId);
+      const fallbackTab = tabs[tabs.length - 1] ?? null;
+      return {
+        ...leaf,
+        tabs,
+        activeTabId: activeStillOpen ? leaf.activeTabId : fallbackTab?.id ?? null,
+      };
+    }
+
+    _paneTree = mapLeaf(_paneTree, _activePaneId, closeInLeaf);
+
+    // Also close in all non-active panes
+    const allLeafIds = allLeaves(_paneTree)
+      .map((l) => l.id)
+      .filter((id) => id !== _activePaneId);
+    for (const leafId of allLeafIds) {
+      _paneTree = mapLeaf(_paneTree, leafId, closeInLeaf);
+    }
+
+    // Collapse any panes that became empty
+    let pruned: PaneLayout = _paneTree;
+    let changed = false;
+    for (const leafId of allLeafIds) {
+      const leaf = allLeaves(pruned).find((l) => l.id === leafId);
+      if (leaf && leaf.tabs.length === 0 && pruned.type === "split") {
+        const result = removePane(pruned, leafId);
+        if (result !== null) {
+          pruned = result;
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      _paneTree = pruned;
+      if (!allLeaves(_paneTree).some((l) => l.id === _activePaneId)) {
+        _activePaneId = firstLeafId(_paneTree);
+      }
+    }
+
+    scheduleSave();
+  },
+
+  /** Close all tabs whose path starts with a given prefix (for folder deletion). */
+  closeTabsByPathPrefix(prefix: string) {
+    function closeInLeaf(leaf: LeafPane): LeafPane {
+      const tabs = leaf.tabs.filter(
+        (t) => t.path !== prefix && !t.path.startsWith(prefix + "/"),
+      );
+      const activeStillOpen = tabs.some((t) => t.id === leaf.activeTabId);
+      const fallbackTab = tabs[tabs.length - 1] ?? null;
+      return {
+        ...leaf,
+        tabs,
+        activeTabId: activeStillOpen ? leaf.activeTabId : fallbackTab?.id ?? null,
+      };
+    }
+
+    // Apply to all leaves
+    const leaves = allLeaves(_paneTree);
+    for (const leaf of leaves) {
+      _paneTree = mapLeaf(_paneTree, leaf.id, closeInLeaf);
+    }
+
+    // Collapse any panes that became empty
+    const updatedLeaves = allLeaves(_paneTree);
+    let pruned: PaneLayout = _paneTree;
+    let changed = false;
+    for (const leaf of updatedLeaves) {
+      if (leaf.tabs.length === 0 && pruned.type === "split") {
+        const result = removePane(pruned, leaf.id);
+        if (result !== null) {
+          pruned = result;
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      _paneTree = pruned;
+      if (!allLeaves(_paneTree).some((l) => l.id === _activePaneId)) {
+        _activePaneId = firstLeafId(_paneTree);
+      }
+    }
+
     scheduleSave();
   },
 

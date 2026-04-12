@@ -33,6 +33,14 @@
 	function onSplitDown() {
 		workspaceStore.splitPane(pane.id, 'vertical');
 	}
+
+	function onCloseOthers(tabId: string) {
+		workspaceStore.closeOtherTabs(pane.id, tabId);
+	}
+
+	function onCloseRight(tabId: string) {
+		workspaceStore.closeTabsToRight(pane.id, tabId);
+	}
 </script>
 
 <!--
@@ -52,6 +60,8 @@
 		{isActive}
 		{onSplitRight}
 		{onSplitDown}
+		onCloseOthers={onCloseOthers}
+		onCloseRight={onCloseRight}
 		onactivate={(id) => workspaceStore.activateTab(pane.id, id)}
 		onclose={(id) => workspaceStore.closeTab(pane.id, id)}
 	/>
