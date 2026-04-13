@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
-use tektite_index::{BacklinkRow, FuzzyFileRow, HeadingSearchRow};
+use tektite_index::{
+    BacklinkRow, FuzzyFileRow, HeadingSearchRow, UnresolvedReport, UnresolvedSourceRef,
+};
 use tektite_search::SearchResult;
 use tektite_vault::watcher::WatcherHandle;
 use tektite_vault::{RenameOutcome, RenamePlan, Vault, VaultError, VaultTreeEntry};
@@ -525,6 +527,37 @@ fn index_get_backlinks(
     Ok(entries)
 }
 
+/// Returns grouped unresolved wiki-link targets across the vault.
+#[tauri::command]
+fn index_unresolved_link_report(
+    limit: Option<usize>,
+    vault_state: State<VaultState>,
+) -> Result<UnresolvedReport, String> {
+    let guard = vault_state.0.lock().unwrap();
+    let vault = guard.as_ref().ok_or("No vault open")?;
+    let index = vault.index.as_ref().ok_or("Index not available")?;
+
+    let limit = limit.unwrap_or(500).min(5_000);
+    index.report_unresolved(limit).map_err(|e| e.to_string())
+}
+
+/// Returns source references for a grouped unresolved target.
+#[tauri::command]
+fn index_unresolved_target_sources(
+    target: String,
+    limit: Option<usize>,
+    vault_state: State<VaultState>,
+) -> Result<Vec<UnresolvedSourceRef>, String> {
+    let guard = vault_state.0.lock().unwrap();
+    let vault = guard.as_ref().ok_or("No vault open")?;
+    let index = vault.index.as_ref().ok_or("Index not available")?;
+
+    let limit = limit.unwrap_or(500).min(5_000);
+    index
+        .unresolved_target_sources(&target, limit)
+        .map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Search commands (Phase 8)
 // ---------------------------------------------------------------------------
@@ -640,6 +673,8 @@ pub fn run() {
             index_get_files,
             index_get_headings_for_file,
             index_get_backlinks,
+            index_unresolved_link_report,
+            index_unresolved_target_sources,
             search_full_text,
             search_fuzzy_files,
             search_headings,

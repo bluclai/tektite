@@ -27,7 +27,7 @@ export { allLeaves };
 // Panel (sidebar)
 // ---------------------------------------------------------------------------
 
-export type Panel = "files" | "search" | "backlinks" | "settings";
+export type Panel = "files" | "search" | "backlinks" | "unresolved" | "settings";
 
 // ---------------------------------------------------------------------------
 // Workspace persistence shape (version-guarded)

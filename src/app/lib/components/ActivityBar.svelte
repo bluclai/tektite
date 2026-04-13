@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { Files, Search, Network, Settings, Database } from 'lucide-svelte';
+    import { Files, Search, Network, Unlink, Settings, Database } from 'lucide-svelte';
     import { workspaceStore, type Panel } from '$lib/stores/workspace.svelte';
     import * as Popover from '$lib/components/ui/popover/index';
     import VaultPopover from '$lib/components/VaultPopover.svelte';
@@ -14,6 +14,7 @@
         { id: 'files', icon: Files, label: 'Files' },
         { id: 'search', icon: Search, label: 'Search' },
         { id: 'backlinks', icon: Network, label: 'Backlinks' },
+        { id: 'unresolved', icon: Unlink, label: 'Unresolved Links' },
     ];
 
     const bottomPanels: PanelButton[] = [

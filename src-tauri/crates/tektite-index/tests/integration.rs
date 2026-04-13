@@ -5,7 +5,7 @@
 //!
 //! Each test opens a fresh in-memory index, so there is no shared state.
 
-use tektite_index::{Index, LinkResolution};
+use tektite_index::{Index, LinkResolution, UnresolvedTargetKind};
 use tektite_parser::parse;
 
 // ---------------------------------------------------------------------------
@@ -551,6 +551,122 @@ fn ambiguous_link_resolves_when_one_candidate_removed() {
         Some(surviving_id.as_str()),
         "previously ambiguous link should resolve after one candidate removed"
     );
+}
+
+// ---------------------------------------------------------------------------
+// unresolved-link report
+// ---------------------------------------------------------------------------
+
+#[test]
+fn report_unresolved_groups_counts_and_sorts_rows() {
+    let mut idx = Index::open_in_memory().unwrap();
+
+    ingest(&mut idx, "notes/source-a.md", "[[ghost]] [[ghost]] [[phantom]]\n");
+    ingest(&mut idx, "notes/source-b.md", "[[Ghost]] [[zeta]]\n");
+    ingest(&mut idx, "notes/source-c.md", "[[phantom]]\n");
+    ingest(&mut idx, "notes/resolved.md", "# Resolved\n");
+    ingest(&mut idx, "notes/source-d.md", "[[resolved]]\n");
+
+    let report = idx.report_unresolved(500).unwrap();
+    assert_eq!(report.total_count, 3);
+    assert_eq!(report.rows.len(), 3);
+
+    assert_eq!(report.rows[0].target, "ghost");
+    assert_eq!(report.rows[0].kind, UnresolvedTargetKind::Unresolved);
+    assert_eq!(report.rows[0].reference_count, 3);
+    assert_eq!(
+        report.rows[0].sample_sources,
+        vec!["notes/source-a.md", "notes/source-a.md", "notes/source-b.md"]
+    );
+    assert!(!report.rows[0].has_more_sources);
+
+    assert_eq!(report.rows[1].target, "phantom");
+    assert_eq!(report.rows[1].reference_count, 2);
+    assert_eq!(
+        report.rows[1].sample_sources,
+        vec!["notes/source-a.md", "notes/source-c.md"]
+    );
+
+    assert_eq!(report.rows[2].target, "zeta");
+    assert_eq!(report.rows[2].reference_count, 1);
+}
+
+#[test]
+fn report_unresolved_applies_limit_and_keeps_pre_limit_total_count() {
+    let mut idx = Index::open_in_memory().unwrap();
+
+    ingest(
+        &mut idx,
+        "notes/source.md",
+        "[[alpha]] [[alpha]] [[alpha]] [[beta]] [[beta]] [[gamma]] [[delta]]\n",
+    );
+
+    let report = idx.report_unresolved(2).unwrap();
+    assert_eq!(report.total_count, 4);
+    assert_eq!(report.rows.len(), 2);
+    assert_eq!(report.rows[0].target, "alpha");
+    assert_eq!(report.rows[0].reference_count, 3);
+    assert_eq!(report.rows[1].target, "beta");
+    assert_eq!(report.rows[1].reference_count, 2);
+}
+
+#[test]
+fn report_unresolved_classifies_ambiguous_targets() {
+    let mut idx = Index::open_in_memory().unwrap();
+    ingest(&mut idx, "a/shared.md", "# A\n");
+    ingest(&mut idx, "b/shared.md", "# B\n");
+    ingest(&mut idx, "notes/source.md", "[[shared]] [[missing]]\n");
+
+    let report = idx.report_unresolved(500).unwrap();
+    let shared = report.rows.iter().find(|row| row.target == "shared").unwrap();
+    let missing = report.rows.iter().find(|row| row.target == "missing").unwrap();
+
+    assert_eq!(shared.kind, UnresolvedTargetKind::Ambiguous);
+    assert_eq!(missing.kind, UnresolvedTargetKind::Unresolved);
+}
+
+#[test]
+fn unresolved_target_sources_returns_deterministic_source_rows() {
+    let mut idx = Index::open_in_memory().unwrap();
+    ingest(
+        &mut idx,
+        "notes/alpha.md",
+        "---\ntitle: Alpha Source\n---\n[[ghost|Shown]] [[ghost#frag]]\n",
+    );
+    ingest(&mut idx, "notes/beta.md", "[[Ghost]]\n");
+
+    let rows = idx.unresolved_target_sources("ghost", 10).unwrap();
+    assert_eq!(rows.len(), 3);
+
+    assert_eq!(rows[0].source_path, "notes/alpha.md");
+    assert_eq!(rows[0].source_title, "Alpha Source");
+    assert_eq!(rows[0].target, "ghost");
+    assert_eq!(rows[0].alias.as_deref(), Some("Shown"));
+    assert_eq!(rows[0].fragment, None);
+
+    assert_eq!(rows[1].source_path, "notes/alpha.md");
+    assert_eq!(rows[1].fragment.as_deref(), Some("frag"));
+    assert_eq!(rows[1].alias, None);
+
+    assert_eq!(rows[2].source_path, "notes/beta.md");
+    assert_eq!(rows[2].source_title, "notes/beta.md");
+
+    let rows_again = idx.unresolved_target_sources("Ghost", 10).unwrap();
+    assert_eq!(rows, rows_again);
+}
+
+#[test]
+fn report_unresolved_drops_target_after_matching_file_is_added() {
+    let mut idx = Index::open_in_memory().unwrap();
+    ingest(&mut idx, "notes/source.md", "[[future-note]]\n");
+
+    let before = idx.report_unresolved(500).unwrap();
+    assert!(before.rows.iter().any(|row| row.target == "future-note"));
+
+    ingest(&mut idx, "future-note.md", "# Future Note\n");
+
+    let after = idx.report_unresolved(500).unwrap();
+    assert!(!after.rows.iter().any(|row| row.target == "future-note"));
 }
 
 // ---------------------------------------------------------------------------

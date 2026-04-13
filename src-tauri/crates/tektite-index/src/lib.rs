@@ -11,11 +11,15 @@
 //! - [`rename`]  — rename planning and application
 
 mod ingest;
+mod link_health;
 mod query;
 mod rename;
 mod resolve;
 mod schema;
 
+pub use link_health::{
+    UnresolvedReport, UnresolvedSourceRef, UnresolvedTargetKind, UnresolvedTargetRow,
+};
 pub use query::{BacklinkRow, FtsRow, FuzzyFileRow, HeadingSearchRow};
 pub use rename::{rewrite_content, RenameEdit, RenamePlan};
 pub use resolve::LinkResolution;
