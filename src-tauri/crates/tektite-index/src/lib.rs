@@ -20,7 +20,7 @@ mod schema;
 pub use link_health::{
     UnresolvedReport, UnresolvedSourceRef, UnresolvedTargetKind, UnresolvedTargetRow,
 };
-pub use query::{BacklinkRow, FtsRow, FuzzyFileRow, HeadingSearchRow};
+pub use query::{BacklinkRow, FtsRow, FuzzyFileRow, HeadingSearchRow, TagSearchRow};
 pub use rename::{rewrite_content, RenameEdit, RenamePlan};
 pub use resolve::LinkResolution;
 

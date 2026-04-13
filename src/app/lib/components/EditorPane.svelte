@@ -26,6 +26,8 @@
 
     import { clayTheme } from '$lib/editor/theme';
     import { wikiLinkExtension, wikiLinkAutocomplete } from '$lib/editor/wiki-link';
+    import { findMarkdownHeadingPosition, findMarkdownTagPosition } from '$lib/editor-navigation';
+    import { editorNavigationStore } from '$lib/stores/editor-navigation.svelte';
     import { editorStore } from '$lib/stores/editor.svelte';
     import { vaultStore } from '$lib/stores/vault.svelte';
     import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -73,7 +75,7 @@
     // View instance
     // ---------------------------------------------------------------------------
 
-    let view: EditorView | null = null;
+    let view = $state<EditorView | null>(null);
 
     // ---------------------------------------------------------------------------
     // Save state tracking
@@ -232,6 +234,78 @@
         externalConflict = false;
         externalContentSnapshot = null;
     }
+
+    function jumpToPosition(position: number) {
+        if (!view) return;
+
+        view.dispatch({
+            selection: { anchor: position },
+            scrollIntoView: true,
+        });
+        view.focus();
+    }
+
+    function jumpToHeading(request: { id: number; headingText: string; level: number; path: string }): void {
+        if (!view) return;
+
+        const position = findMarkdownHeadingPosition(
+            view.state.doc.toString(),
+            request.headingText,
+            request.level,
+        );
+
+        if (position === null) {
+            editorStore.setSaveState('error', {
+                detail: `Couldn't find heading ${request.headingText}`,
+                target: request.path,
+            });
+            editorNavigationStore.consume(request.id);
+            return;
+        }
+
+        jumpToPosition(position);
+        editorStore.setSaveState('saved', {
+            detail: `Jumped to heading ${request.headingText}`,
+            target: request.path,
+        });
+        editorNavigationStore.consume(request.id);
+    }
+
+    function jumpToTag(request: { id: number; tagName: string; path: string }): void {
+        if (!view) return;
+
+        const position = findMarkdownTagPosition(view.state.doc.toString(), request.tagName);
+        if (position === null) {
+            editorStore.setSaveState('error', {
+                detail: `Couldn't find tag #${request.tagName}`,
+                target: request.path,
+            });
+            editorNavigationStore.consume(request.id);
+            return;
+        }
+
+        jumpToPosition(position);
+        editorStore.setSaveState('saved', {
+            detail: `Jumped to tag #${request.tagName}`,
+            target: request.path,
+        });
+        editorNavigationStore.consume(request.id);
+    }
+
+    $effect(() => {
+        const request = editorNavigationStore.request;
+        if (!view || !request) return;
+        if (request.path !== relativePathForCurrentFile()) return;
+
+        if (request.kind === 'heading') {
+            jumpToHeading(request);
+            return;
+        }
+
+        if (request.kind === 'tag') {
+            jumpToTag(request);
+        }
+    });
 
     // ---------------------------------------------------------------------------
     // CM6 update listener — fires on every document change

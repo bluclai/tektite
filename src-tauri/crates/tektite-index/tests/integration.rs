@@ -218,6 +218,18 @@ fn upsert_and_query_tags() {
 }
 
 #[test]
+fn search_tags_returns_matching_rows_with_paths() {
+    let mut idx = Index::open_in_memory().unwrap();
+    let id = ingest(&mut idx, "notes/tagged.md", "Hello #rust #testing world.\n");
+
+    let rows = idx.search_tags("rust", 10).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].file_id, id);
+    assert_eq!(rows[0].file_path, "notes/tagged.md");
+    assert_eq!(rows[0].name, "rust");
+}
+
+#[test]
 fn upsert_and_query_tasks() {
     let mut idx = Index::open_in_memory().unwrap();
     let id = ingest(

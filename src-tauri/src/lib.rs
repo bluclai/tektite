@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
 use tektite_index::{
-    BacklinkRow, FuzzyFileRow, HeadingSearchRow, UnresolvedReport, UnresolvedSourceRef,
+    BacklinkRow, FuzzyFileRow, HeadingSearchRow, TagSearchRow, UnresolvedReport,
+    UnresolvedSourceRef,
 };
 use tektite_search::SearchResult;
 use tektite_vault::watcher::WatcherHandle;
@@ -611,6 +612,21 @@ fn search_headings(
         .map_err(|e| e.to_string())
 }
 
+/// Search tags across the vault.
+#[tauri::command]
+fn search_tags(
+    query: String,
+    limit: Option<usize>,
+    vault_state: State<VaultState>,
+) -> Result<Vec<TagSearchRow>, String> {
+    let guard = vault_state.0.lock().unwrap();
+    let vault = guard.as_ref().ok_or("No vault open")?;
+    let index = vault.index.as_ref().ok_or("Index not available")?;
+
+    let limit = limit.unwrap_or(20).min(100);
+    index.search_tags(&query, limit).map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Workspace persistence
 // ---------------------------------------------------------------------------
@@ -678,6 +694,7 @@ pub fn run() {
             search_full_text,
             search_fuzzy_files,
             search_headings,
+            search_tags,
             workspace_load,
             workspace_save,
         ])

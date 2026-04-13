@@ -73,6 +73,13 @@ pub struct HeadingSearchRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagSearchRow {
+    pub file_id: NoteId,
+    pub file_path: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BacklinkRow {
     pub source_path: String,
     pub source_title: String,
@@ -415,6 +422,34 @@ impl Index {
                 file_path: row.get(1)?,
                 level: row.get(2)?,
                 text: row.get(3)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Returns all tags matching a search term (case-insensitive LIKE).
+    pub fn search_tags(&self, query: &str, limit: usize) -> Result<Vec<TagSearchRow>, IndexError> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let pattern = format!("%{}%", trimmed);
+        let mut stmt = self.conn.prepare(
+            "SELECT t.file_id, f.path, t.name
+             FROM tags t
+             JOIN files f ON f.id = t.file_id
+             WHERE LOWER(t.name) LIKE LOWER(?1)
+             ORDER BY t.name, f.path
+             LIMIT ?2",
+        )?;
+
+        let rows = stmt.query_map(params![pattern, limit as i64], |row| {
+            Ok(TagSearchRow {
+                file_id: row.get(0)?,
+                file_path: row.get(1)?,
+                name: row.get(2)?,
             })
         })?;
 
