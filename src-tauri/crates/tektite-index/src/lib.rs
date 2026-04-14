@@ -18,7 +18,7 @@ mod resolve;
 mod schema;
 
 pub use link_health::{
-    UnresolvedReport, UnresolvedSourceRef, UnresolvedTargetKind, UnresolvedTargetRow,
+    UnresolvedReport, UnresolvedSourceRef, UnresolvedTargetKind, UnresolvedTargetRow, VaultStats,
 };
 pub use query::{BacklinkRow, FtsRow, FuzzyFileRow, HeadingSearchRow, TagSearchRow};
 pub use rename::{rewrite_content, RenameEdit, RenamePlan};

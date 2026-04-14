@@ -1,4 +1,6 @@
 import { filesStore } from "$lib/stores/files.svelte";
+import { indexStatsStore } from "$lib/stores/indexStats.svelte";
+import { operationStore } from "$lib/stores/operationStore.svelte";
 import { invoke } from "@tauri-apps/api/core";
 
 export interface VaultEntry {
@@ -37,6 +39,12 @@ export async function openVault(vaultPath: string): Promise<void> {
     // Start listening for external filesystem changes, then load initial tree.
     await filesStore.startWatching();
     await filesStore.refresh();
+
+    // Subscribe to index stats updates.
+    await indexStatsStore.start();
+
+    // Subscribe to transient operation signals (embed progress, agent runs).
+    await operationStore.start();
   } catch (error) {
     _openError = error instanceof Error ? error.message : String(error);
     throw error;

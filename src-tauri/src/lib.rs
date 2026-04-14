@@ -33,6 +33,32 @@ struct VaultFilesChangedPayload {
     paths: Vec<String>,
 }
 
+/// Payload emitted on `index:stats-changed` and returned by `index_get_vault_stats`.
+#[derive(Debug, Serialize, Clone)]
+struct IndexStatsPayload {
+    note_count: u32,
+    link_count: u32,
+    unresolved_link_count: u32,
+    /// Unix timestamp in milliseconds — when the index last settled.
+    indexed_at: i64,
+}
+
+/// Builds an [`IndexStatsPayload`] from an open vault.
+/// Returns `None` if the vault has no index yet.
+fn build_stats_payload(vault: &Vault) -> Option<IndexStatsPayload> {
+    let stats = vault.index.as_ref()?.vault_stats().ok()?;
+    let indexed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    Some(IndexStatsPayload {
+        note_count: stats.note_count,
+        link_count: stats.link_count,
+        unresolved_link_count: stats.unresolved_link_count,
+        indexed_at,
+    })
+}
+
 #[derive(Debug, Serialize, Clone)]
 struct RenameResult {
     old_path: String,
@@ -117,6 +143,9 @@ fn vault_open(
     // subsequent opens of the same vault are fast.
     vault.scan_and_index().map_err(ve)?;
 
+    // Capture stats before the vault is moved into managed state.
+    let maybe_stats = build_stats_payload(&vault);
+
     // Replace vault state.
     *vault_state.0.lock().unwrap() = Some(vault);
 
@@ -177,6 +206,11 @@ fn vault_open(
     vaults.truncate(10);
     write_recent_vaults(&app, &vaults);
 
+    // Push initial stats to the frontend now that the index is ready.
+    if let Some(payload) = maybe_stats {
+        let _ = app.emit("index:stats-changed", payload);
+    }
+
     Ok(entry)
 }
 
@@ -196,38 +230,47 @@ fn editor_read_file(path: String) -> Result<String, String> {
 /// current without waiting for the watcher round-trip.
 #[tauri::command]
 fn editor_write_file(
+    app: tauri::AppHandle,
     path: String,
     content: String,
     vault_state: State<VaultState>,
 ) -> Result<(), String> {
-    let mut guard = vault_state.0.lock().unwrap();
-    let vault = guard.as_mut().ok_or("No vault open")?;
+    let maybe_stats = {
+        let mut guard = vault_state.0.lock().unwrap();
+        let vault = guard.as_mut().ok_or("No vault open")?;
 
-    // Derive the vault-relative path.
-    let abs = PathBuf::from(&path);
-    let rel = abs
-        .strip_prefix(&vault.root)
-        .map_err(|_| format!("Cannot save outside the open vault: {path}"))?
-        .to_string_lossy()
-        .replace('\\', "/");
+        // Derive the vault-relative path.
+        let abs = PathBuf::from(&path);
+        let rel = abs
+            .strip_prefix(&vault.root)
+            .map_err(|_| format!("Cannot save outside the open vault: {path}"))?
+            .to_string_lossy()
+            .replace('\\', "/");
 
-    // Write through the vault (registers write tokens for watcher suppression).
-    vault
-        .write_file(&rel, &content)
-        .map_err(|e| format!("Failed to save {rel}: {}", ve(e)))?;
+        // Write through the vault (registers write tokens for watcher suppression).
+        vault
+            .write_file(&rel, &content)
+            .map_err(|e| format!("Failed to save {rel}: {}", ve(e)))?;
 
-    // Immediately re-index so backlinks and link resolution are current.
-    if let Some(index) = vault.index.as_mut() {
-        let mtime = fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let parsed = tektite_parser::parse(&content);
-        if let Err(e) = index.upsert(&rel, mtime, &parsed) {
-            eprintln!("editor_write_file: inline reindex failed: {e}");
+        // Immediately re-index so backlinks and link resolution are current.
+        if let Some(index) = vault.index.as_mut() {
+            let mtime = fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let parsed = tektite_parser::parse(&content);
+            if let Err(e) = index.upsert(&rel, mtime, &parsed) {
+                eprintln!("editor_write_file: inline reindex failed: {e}");
+            }
         }
+
+        build_stats_payload(vault)
+    };
+
+    if let Some(payload) = maybe_stats {
+        let _ = app.emit("index:stats-changed", payload);
     }
 
     Ok(())
@@ -246,22 +289,33 @@ fn files_get_tree(vault_state: State<VaultState>) -> Result<Vec<VaultTreeEntry>,
 
 #[tauri::command]
 fn files_create_file(
+    app: tauri::AppHandle,
     rel_path: String,
     initial_content: Option<String>,
     vault_state: State<VaultState>,
 ) -> Result<Vec<VaultTreeEntry>, String> {
-    let mut guard = vault_state.0.lock().unwrap();
-    let vault = guard.as_mut().ok_or("No vault open")?;
-    vault
-        .create_file(&rel_path, initial_content.as_deref())
-        .map_err(ve)?;
+    let (tree, maybe_stats) = {
+        let mut guard = vault_state.0.lock().unwrap();
+        let vault = guard.as_mut().ok_or("No vault open")?;
+        vault
+            .create_file(&rel_path, initial_content.as_deref())
+            .map_err(ve)?;
 
-    let abs = vault.absolute_path(&rel_path).map_err(ve)?;
-    if let Err(error) = vault.reindex_file(&abs) {
-        eprintln!("files_create_file: failed to index new file {rel_path}: {error}");
+        let abs = vault.absolute_path(&rel_path).map_err(ve)?;
+        if let Err(error) = vault.reindex_file(&abs) {
+            eprintln!("files_create_file: failed to index new file {rel_path}: {error}");
+        }
+
+        let tree = vault.get_tree().map_err(ve)?;
+        let stats = build_stats_payload(vault);
+        (tree, stats)
+    };
+
+    if let Some(payload) = maybe_stats {
+        let _ = app.emit("index:stats-changed", payload);
     }
 
-    vault.get_tree().map_err(ve)
+    Ok(tree)
 }
 
 #[tauri::command]
@@ -276,22 +330,37 @@ fn files_create_folder(
 }
 
 #[tauri::command]
-fn files_delete(rel_path: String, vault_state: State<VaultState>) -> Result<Vec<VaultTreeEntry>, String> {
-    let mut guard = vault_state.0.lock().unwrap();
-    let vault = guard.as_mut().ok_or("No vault open")?;
+fn files_delete(
+    app: tauri::AppHandle,
+    rel_path: String,
+    vault_state: State<VaultState>,
+) -> Result<Vec<VaultTreeEntry>, String> {
+    let (tree, maybe_stats) = {
+        let mut guard = vault_state.0.lock().unwrap();
+        let vault = guard.as_mut().ok_or("No vault open")?;
 
-    // Remove from index *before* deleting from disk so the index cannot
-    // end up with a dangling entry (the watcher will also fire later,
-    // making this idempotent).
-    let abs = vault.absolute_path(&rel_path).map_err(ve)?;
-    let _ = vault.remove_from_index(&abs);
+        // Remove from index *before* deleting from disk so the index cannot
+        // end up with a dangling entry (the watcher will also fire later,
+        // making this idempotent).
+        let abs = vault.absolute_path(&rel_path).map_err(ve)?;
+        let _ = vault.remove_from_index(&abs);
 
-    // Register a write token so the watcher suppresses the delete event
-    // and doesn't redundantly try to remove from index.
-    vault.write_tokens.insert(abs.clone());
+        // Register a write token so the watcher suppresses the delete event
+        // and doesn't redundantly try to remove from index.
+        vault.write_tokens.insert(abs.clone());
 
-    vault.delete(&rel_path).map_err(ve)?;
-    vault.get_tree().map_err(ve)
+        vault.delete(&rel_path).map_err(ve)?;
+
+        let tree = vault.get_tree().map_err(ve)?;
+        let stats = build_stats_payload(vault);
+        (tree, stats)
+    };
+
+    if let Some(payload) = maybe_stats {
+        let _ = app.emit("index:stats-changed", payload);
+    }
+
+    Ok(tree)
 }
 
 // ---------------------------------------------------------------------------
@@ -342,11 +411,37 @@ fn vault_apply_rename(
         );
     }
 
+    // Emit updated stats — rename rewrites links, so counts may change.
+    {
+        let guard = vault_state.0.lock().unwrap();
+        if let Some(vault) = guard.as_ref() {
+            if let Some(payload) = build_stats_payload(vault) {
+                let _ = app.emit("index:stats-changed", payload);
+            }
+        }
+    }
+
     Ok(RenameResult {
         old_path,
         new_path,
         changed_paths,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Index stats command
+// ---------------------------------------------------------------------------
+
+/// Returns current vault-wide aggregate stats (note count, link count, unresolved count).
+///
+/// The frontend also receives these via the `index:stats-changed` push event
+/// after every index mutation. This command is used to fetch the initial state
+/// on vault open before the first event arrives.
+#[tauri::command]
+fn index_get_vault_stats(vault_state: State<VaultState>) -> Result<IndexStatsPayload, String> {
+    let guard = vault_state.0.lock().unwrap();
+    let vault = guard.as_ref().ok_or("No vault open")?;
+    build_stats_payload(vault).ok_or_else(|| "Index not available".into())
 }
 
 // ---------------------------------------------------------------------------
@@ -685,6 +780,7 @@ pub fn run() {
             files_delete,
             vault_plan_rename,
             vault_apply_rename,
+            index_get_vault_stats,
             index_resolve_link,
             index_get_files,
             index_get_headings_for_file,
