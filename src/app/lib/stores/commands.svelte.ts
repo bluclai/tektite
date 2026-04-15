@@ -48,6 +48,15 @@ function ensureSeeded() {
       category: "Pane",
       action: () => workspaceStore.setActivePanel("unresolved"),
     },
+    {
+      id: "panel.graph",
+      label: "Go to Graph panel",
+      category: "Pane",
+      action: () => {
+        workspaceStore.setActivePanel("graph");
+        workspaceStore.openSidebar();
+      },
+    },
   ]);
 }
 

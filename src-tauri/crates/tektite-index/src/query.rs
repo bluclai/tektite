@@ -428,6 +428,15 @@ impl Index {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Returns every distinct tag name in the vault, sorted ascending.
+    pub fn all_tag_names(&self) -> Result<Vec<String>, IndexError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT name FROM tags ORDER BY name")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Returns all tags matching a search term (case-insensitive LIKE).
     pub fn search_tags(&self, query: &str, limit: usize) -> Result<Vec<TagSearchRow>, IndexError> {
         let trimmed = query.trim();

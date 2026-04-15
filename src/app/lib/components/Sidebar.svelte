@@ -4,12 +4,14 @@
     import SearchPanel from '$lib/components/SearchPanel.svelte';
     import BacklinksPanel from '$lib/components/BacklinksPanel.svelte';
     import UnresolvedLinksPanel from '$lib/components/UnresolvedLinksPanel.svelte';
+    import GraphPanel from '$lib/components/GraphPanel.svelte';
 
     const panelLabels: Record<string, string> = {
         files: 'Files',
         search: 'Search',
         backlinks: 'Backlinks',
         unresolved: 'Unresolved Links',
+        graph: 'Graph',
         settings: 'Settings',
     };
 
@@ -93,6 +95,8 @@
                 <BacklinksPanel />
             {:else if workspaceStore.activePanel === 'unresolved'}
                 <UnresolvedLinksPanel />
+            {:else if workspaceStore.activePanel === 'graph'}
+                <GraphPanel />
             {:else}
                 <!-- Placeholder for Settings (future phases) -->
                 <div class="flex h-full items-center justify-center">

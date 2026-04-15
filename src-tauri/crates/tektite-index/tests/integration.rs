@@ -5,7 +5,7 @@
 //!
 //! Each test opens a fresh in-memory index, so there is no shared state.
 
-use tektite_index::{Index, LinkResolution, UnresolvedTargetKind};
+use tektite_index::{GraphFilters, Index, LinkResolution, UnresolvedTargetKind, NODE_CAP};
 use tektite_parser::parse;
 
 // ---------------------------------------------------------------------------
@@ -16,6 +16,12 @@ use tektite_parser::parse;
 fn ingest(idx: &mut Index, path: &str, content: &str) -> String {
     let note = parse(content);
     idx.upsert(path, 0, &note).expect("upsert failed")
+}
+
+/// Parse markdown and upsert with an explicit mtime. Returns the NoteId.
+fn ingest_at(idx: &mut Index, path: &str, mtime: i64, content: &str) -> String {
+    let note = parse(content);
+    idx.upsert(path, mtime, &note).expect("upsert failed")
 }
 
 // ---------------------------------------------------------------------------
@@ -909,4 +915,300 @@ fn directory_rename_plan_covers_all_files() {
 
     let edit_c = p.edits.iter().find(|e| e.before == "[[notes/c]]").unwrap();
     assert_eq!(edit_c.after, "[[archive/c]]");
+}
+
+// ---------------------------------------------------------------------------
+// Graph neighborhood (Phase 0)
+// ---------------------------------------------------------------------------
+
+/// Builds a small linear graph:
+///   a.md → b.md → c.md → d.md
+/// with every note also having a trailing backlink to `hub.md` that links
+/// back to `a.md` (to exercise backlink-driven expansion).
+fn seed_linear(idx: &mut Index) -> [String; 5] {
+    let a = ingest(idx, "a.md", "# A\n[[b]]\n");
+    let b = ingest(idx, "b.md", "# B\n[[c]]\n");
+    let c = ingest(idx, "c.md", "# C\n[[d]]\n");
+    let d = ingest(idx, "d.md", "# D\n");
+    let hub = ingest(idx, "hub.md", "# Hub\n[[a]]\n");
+    [a, b, c, d, hub]
+}
+
+fn node_paths(data: &tektite_index::GraphData) -> Vec<&str> {
+    data.nodes.iter().map(|n| n.path.as_str()).collect()
+}
+
+fn edge_tuples<'a>(
+    data: &'a tektite_index::GraphData,
+    id_to_path: &'a std::collections::HashMap<String, String>,
+) -> Vec<(&'a str, &'a str)> {
+    data.edges
+        .iter()
+        .map(|e| {
+            (
+                id_to_path.get(&e.source).map(String::as_str).unwrap_or("?"),
+                id_to_path.get(&e.target).map(String::as_str).unwrap_or("?"),
+            )
+        })
+        .collect()
+}
+
+fn path_map(ids_paths: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+    ids_paths
+        .iter()
+        .map(|(id, p)| ((*id).to_string(), (*p).to_string()))
+        .collect()
+}
+
+#[test]
+fn neighborhood_depth_one_returns_immediate_neighbors() {
+    let mut idx = Index::open_in_memory().unwrap();
+    let [a, b, c, _d, hub] = seed_linear(&mut idx);
+
+    let data = idx.neighborhood(&b, 1, &GraphFilters::default()).unwrap();
+
+    // b is reached by: a→b (backlink), b→c (outgoing). hub is not adjacent.
+    let paths = node_paths(&data);
+    assert!(paths.contains(&"a.md"));
+    assert!(paths.contains(&"b.md"));
+    assert!(paths.contains(&"c.md"));
+    assert!(!paths.contains(&"d.md"));
+    assert!(!paths.contains(&"hub.md"));
+
+    let map = path_map(&[(&a, "a.md"), (&b, "b.md"), (&c, "c.md"), (&hub, "hub.md")]);
+    let edges = edge_tuples(&data, &map);
+    assert!(edges.contains(&("a.md", "b.md")));
+    assert!(edges.contains(&("b.md", "c.md")));
+}
+
+#[test]
+fn neighborhood_depth_two_expands_further() {
+    let mut idx = Index::open_in_memory().unwrap();
+    let [a, _b, _c, _d, _hub] = seed_linear(&mut idx);
+
+    let data = idx.neighborhood(&a, 2, &GraphFilters::default()).unwrap();
+    let paths = node_paths(&data);
+    // a → b (depth 1), b → c (depth 2), hub → a (depth 1 via backlink)
+    assert!(paths.contains(&"a.md"));
+    assert!(paths.contains(&"b.md"));
+    assert!(paths.contains(&"c.md"));
+    assert!(paths.contains(&"hub.md"));
+    assert!(!paths.contains(&"d.md"));
+}
+
+#[test]
+fn neighborhood_clamps_depth_above_max() {
+    let mut idx = Index::open_in_memory().unwrap();
+    let [a, _b, _c, _d, _hub] = seed_linear(&mut idx);
+    // depth=99 must clamp to MAX_DEPTH=3; d.md is 3 hops from a.md.
+    let data = idx.neighborhood(&a, 99, &GraphFilters::default()).unwrap();
+    let paths = node_paths(&data);
+    assert!(paths.contains(&"d.md"));
+}
+
+#[test]
+fn neighborhood_dedups_duplicate_links() {
+    let mut idx = Index::open_in_memory().unwrap();
+    let a = ingest(&mut idx, "a.md", "[[b]] again [[b]] and once more [[b]]\n");
+    ingest(&mut idx, "b.md", "# B\n");
+
+    let data = idx.neighborhood(&a, 1, &GraphFilters::default()).unwrap();
+    // Three link records to b, but only one edge should appear.
+    assert_eq!(data.edges.len(), 1);
+    assert_eq!(data.nodes.len(), 2);
+}
+
+#[test]
+fn neighborhood_skips_self_loops() {
+    let mut idx = Index::open_in_memory().unwrap();
+    let a = ingest(&mut idx, "a.md", "[[a]] self-reference\n");
+
+    let data = idx.neighborhood(&a, 1, &GraphFilters::default()).unwrap();
+    assert_eq!(data.nodes.len(), 1);
+    assert!(data.edges.is_empty());
+}
+
+#[test]
+fn neighborhood_skips_unresolved_links() {
+    let mut idx = Index::open_in_memory().unwrap();
+    let a = ingest(&mut idx, "a.md", "[[does-not-exist]]\n");
+
+    let data = idx.neighborhood(&a, 1, &GraphFilters::default()).unwrap();
+    assert_eq!(data.nodes.len(), 1);
+    assert!(data.edges.is_empty());
+}
+
+#[test]
+fn neighborhood_returns_empty_for_missing_center() {
+    let idx = Index::open_in_memory().unwrap();
+    let data = idx
+        .neighborhood("not-a-real-id", 1, &GraphFilters::default())
+        .unwrap();
+    assert!(data.nodes.is_empty());
+    assert!(data.edges.is_empty());
+}
+
+#[test]
+fn neighborhood_folder_filter_excludes_mismatched_paths() {
+    let mut idx = Index::open_in_memory().unwrap();
+    let a = ingest(&mut idx, "work/a.md", "[[work/b]] [[personal/c]]\n");
+    ingest(&mut idx, "work/b.md", "# B\n");
+    ingest(&mut idx, "personal/c.md", "# C\n");
+
+    let filters = GraphFilters {
+        folder: Some("work/".to_string()),
+        ..GraphFilters::default()
+    };
+    let data = idx.neighborhood(&a, 1, &filters).unwrap();
+    let paths = node_paths(&data);
+    assert!(paths.contains(&"work/a.md"));
+    assert!(paths.contains(&"work/b.md"));
+    assert!(!paths.contains(&"personal/c.md"));
+}
+
+#[test]
+fn neighborhood_tag_filter_keeps_matching_tags() {
+    let mut idx = Index::open_in_memory().unwrap();
+    let a = ingest(&mut idx, "a.md", "#hub\n[[b]] [[c]]\n");
+    ingest(&mut idx, "b.md", "#keep\n# B\n");
+    ingest(&mut idx, "c.md", "#skip\n# C\n");
+
+    let filters = GraphFilters {
+        tags: Some(vec!["keep".to_string(), "hub".to_string()]),
+        ..GraphFilters::default()
+    };
+    let data = idx.neighborhood(&a, 1, &filters).unwrap();
+    let paths = node_paths(&data);
+    assert!(paths.contains(&"a.md"));
+    assert!(paths.contains(&"b.md"));
+    assert!(!paths.contains(&"c.md"));
+}
+
+#[test]
+fn neighborhood_recency_filter_excludes_old_notes() {
+    let mut idx = Index::open_in_memory().unwrap();
+    let a = ingest_at(&mut idx, "a.md", 1_000_000, "[[b]] [[c]]\n");
+    ingest_at(&mut idx, "b.md", 2_000_000, "# B\n");
+    ingest_at(&mut idx, "c.md", 500_000, "# C\n");
+
+    let filters = GraphFilters {
+        modified_after: Some(900_000),
+        ..GraphFilters::default()
+    };
+    let data = idx.neighborhood(&a, 1, &filters).unwrap();
+    let paths = node_paths(&data);
+    assert!(paths.contains(&"a.md"));
+    assert!(paths.contains(&"b.md"));
+    assert!(!paths.contains(&"c.md"));
+}
+
+#[test]
+fn neighborhood_node_cap_keeps_center_and_prunes_lowest_link_count() {
+    let mut idx = Index::open_in_memory().unwrap();
+
+    // Center links to NODE_CAP + 10 leaves. Each leaf has only the incoming
+    // edge (link_count = 1) so every leaf is a pruning candidate; the center
+    // has link_count = NODE_CAP + 10 and must survive.
+    let over = NODE_CAP + 10;
+    let mut body = String::from("# Hub\n");
+    for i in 0..over {
+        body.push_str(&format!("[[leaf-{i}]]\n"));
+    }
+    let center = ingest(&mut idx, "hub.md", &body);
+    for i in 0..over {
+        ingest(&mut idx, &format!("leaf-{i}.md"), "# Leaf\n");
+    }
+
+    let data = idx.neighborhood(&center, 1, &GraphFilters::default()).unwrap();
+    assert_eq!(data.nodes.len(), NODE_CAP);
+    assert!(
+        data.nodes.iter().any(|n| n.id == center),
+        "center must survive cap enforcement"
+    );
+    // Every remaining edge must reference two surviving nodes.
+    let ids: std::collections::HashSet<&str> =
+        data.nodes.iter().map(|n| n.id.as_str()).collect();
+    for edge in &data.edges {
+        assert!(ids.contains(edge.source.as_str()));
+        assert!(ids.contains(edge.target.as_str()));
+    }
+}
+
+#[test]
+fn neighborhood_node_metadata_includes_title_tags_mtime_and_link_count() {
+    let mut idx = Index::open_in_memory().unwrap();
+    let a = ingest_at(
+        &mut idx,
+        "a.md",
+        42,
+        "---\ntitle: Titled Note\n---\n#alpha #beta\n[[b]]\n",
+    );
+    ingest(&mut idx, "b.md", "# B\n");
+
+    let data = idx.neighborhood(&a, 1, &GraphFilters::default()).unwrap();
+    let node_a = data.nodes.iter().find(|n| n.id == a).unwrap();
+    assert_eq!(node_a.title, "Titled Note");
+    assert_eq!(node_a.modified, 42);
+    assert!(node_a.tags.contains(&"alpha".to_string()));
+    assert!(node_a.tags.contains(&"beta".to_string()));
+    assert!(node_a.link_count >= 1);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 0 exit-criteria benchmark: <50ms on a 500-file vault at depth 2.
+//
+// Ignored by default so normal `cargo test` stays fast; run with:
+//   cargo test -p tektite-index --test integration -- --ignored neighborhood_benchmark
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn neighborhood_benchmark_500_files_depth_two_under_50ms() {
+    use std::time::Instant;
+
+    let mut idx = Index::open_in_memory().unwrap();
+
+    // 500 files in 10 folders. Each file links to the next two in the same
+    // folder (ring) and to one file in the "next" folder — gives a realistic
+    // link density where BFS has to do real work at depth 2.
+    let file_count = 500usize;
+    let folder_count = 10usize;
+    let per_folder = file_count / folder_count;
+
+    let mut first_id: Option<String> = None;
+    for i in 0..file_count {
+        let folder = i / per_folder;
+        let idx_in_folder = i % per_folder;
+        let next_a = (idx_in_folder + 1) % per_folder;
+        let next_b = (idx_in_folder + 2) % per_folder;
+        let cross_folder = (folder + 1) % folder_count;
+        let body = format!(
+            "[[folder-{folder}/note-{next_a}]] [[folder-{folder}/note-{next_b}]] [[folder-{cross_folder}/note-{idx_in_folder}]]\n",
+        );
+        let path = format!("folder-{folder}/note-{idx_in_folder}.md");
+        let id = ingest(&mut idx, &path, &body);
+        if first_id.is_none() {
+            first_id = Some(id);
+        }
+    }
+    let center = first_id.unwrap();
+
+    // Warm up any lazy statement preparation.
+    let _ = idx.neighborhood(&center, 2, &GraphFilters::default()).unwrap();
+
+    let runs = 5;
+    let mut total_us = 0u128;
+    for _ in 0..runs {
+        let start = Instant::now();
+        let data = idx.neighborhood(&center, 2, &GraphFilters::default()).unwrap();
+        total_us += start.elapsed().as_micros();
+        assert!(!data.nodes.is_empty());
+        assert!(data.nodes.len() <= NODE_CAP);
+    }
+    let avg_ms = (total_us as f64) / (runs as f64) / 1000.0;
+    eprintln!("neighborhood avg: {avg_ms:.2} ms over {runs} runs (500 files, depth 2)");
+    assert!(
+        avg_ms < 50.0,
+        "depth-2 neighborhood on 500 files should complete in <50ms, got {avg_ms:.2}ms",
+    );
 }

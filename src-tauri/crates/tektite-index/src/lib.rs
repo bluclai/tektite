@@ -9,7 +9,9 @@
 //! - [`query`]   — read-only queries (files, links, tags, headings, aliases)
 //! - [`resolve`] — link resolution with proximity tiebreaking
 //! - [`rename`]  — rename planning and application
+//! - [`graph`]   — local-neighborhood BFS for the graph view
 
+mod graph;
 mod ingest;
 mod link_health;
 mod query;
@@ -17,6 +19,9 @@ mod rename;
 mod resolve;
 mod schema;
 
+pub use graph::{
+    GraphData, GraphEdge, GraphFilters, GraphNode, DEFAULT_DEPTH, MAX_DEPTH, NODE_CAP,
+};
 pub use link_health::{
     UnresolvedReport, UnresolvedSourceRef, UnresolvedTargetKind, UnresolvedTargetRow, VaultStats,
 };
