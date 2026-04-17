@@ -25,7 +25,7 @@
     import { closeBrackets, autocompletion, closeBracketsKeymap } from '@codemirror/autocomplete';
 
     import { clayTheme } from '$lib/editor/theme';
-    import { wikiLinkExtension, wikiLinkAutocomplete } from '$lib/editor/wiki-link';
+    import { wikiLinkExtension, wikiLinkAutocomplete, invalidatePeekCache } from '$lib/editor/wiki-link';
     import { findMarkdownHeadingPosition, findMarkdownTagPosition } from '$lib/editor-navigation';
     import { editorNavigationStore } from '$lib/stores/editor-navigation.svelte';
     import { editorStore } from '$lib/stores/editor.svelte';
@@ -446,6 +446,11 @@
         let unlistenExternal: UnlistenFn | null = null;
         void listen<{ paths: string[] }>('vault-files-changed', (event) => {
             const currentRel = relativePathForCurrentFile();
+            // Evict changed files from the peek cache so next hover re-fetches.
+            const root = vaultStore.path ?? '';
+            for (const relPath of event.payload.paths) {
+                invalidatePeekCache(`${root}/${relPath}`);
+            }
             if (!event.payload.paths.includes(currentRel)) return;
             void onExternalChange();
         }).then((fn) => {

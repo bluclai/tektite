@@ -329,6 +329,24 @@ fn editor_read_file(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("Failed to open {path}: {e}"))
 }
 
+/// Reads at most `max_bytes` from the start of a file.
+///
+/// Designed for tooltip previews — avoids loading a 100 KB note to show
+/// the first 200 chars. The slice is truncated to a valid UTF-8 boundary
+/// so the returned string is always safe to use.
+#[tauri::command]
+fn preview_get_content(path: String, max_bytes: usize) -> Result<String, String> {
+    use std::io::{BufReader, Read};
+    let file = fs::File::open(&path).map_err(|e| format!("preview_get_content: {e}"))?;
+    let mut reader = BufReader::new(file);
+    let mut buf = vec![0u8; max_bytes];
+    let n = reader
+        .read(&mut buf)
+        .map_err(|e| format!("preview_get_content read: {e}"))?;
+    buf.truncate(n);
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// Writes file content and immediately updates the index.
 ///
 /// Routes through the vault so write-tokens are registered (preventing the
@@ -1256,6 +1274,7 @@ pub fn run() {
             vault_get_recent,
             vault_open,
             editor_read_file,
+            preview_get_content,
             editor_write_file,
             files_get_tree,
             files_create_file,
