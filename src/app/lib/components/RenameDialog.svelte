@@ -162,14 +162,14 @@
 		}}
 	>
 		<div
-			class="relative w-[560px] max-w-[90vw] rounded-xl border border-outline-variant/20 bg-surface-container shadow-2xl"
+			class="relative w-[560px] max-w-[90vw] rounded-xl bg-surface-container shadow-2xl"
 			role="dialog"
 			aria-modal="true"
 			aria-label="Rename file"
 			tabindex="-1"
 			onkeydown={onKeydown}
 		>
-			<div class="border-b border-outline-variant/15 px-5 py-4">
+			<div class="px-5 pt-5 pb-2">
 				<h2 class="text-sm font-medium text-on-surface">Rename file</h2>
 				<p class="mt-0.5 truncate text-xs text-on-surface-variant opacity-50">{oldRelPath}</p>
 			</div>
@@ -207,7 +207,7 @@
 					<p class="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">{planError}</p>
 				{:else if plan}
 					<div class="space-y-3">
-						<div class="rounded-lg border border-outline-variant/15 bg-surface-container-low px-3 py-2 text-xs text-on-surface-variant opacity-75">
+						<div class="rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface-variant opacity-75">
 							{#if plan.edits.length === 0}
 								Preview ready. No link rewrites are required.
 							{:else}
@@ -216,9 +216,9 @@
 						</div>
 
 						{#if plan.edits.length > 0}
-							<div class="max-h-56 overflow-y-auto rounded-lg border border-outline-variant/15 bg-surface-container-low">
+							<div class="max-h-56 overflow-y-auto rounded-lg bg-surface-container-low">
 								{#each editsByFile as { filePath, edits }}
-									<div class="border-b border-outline-variant/10 px-3 py-2 last:border-b-0">
+									<div class="px-3 py-2">
 										<div class="mb-1.5 truncate text-xs font-medium text-on-surface opacity-70">{filePath}</div>
 										{#each edits as edit}
 											<div class="mb-2 rounded-md bg-surface px-2 py-1.5 last:mb-0">
@@ -238,7 +238,7 @@
 				{/if}
 			</div>
 
-			<div class="flex items-center justify-end gap-2 border-t border-outline-variant/15 px-5 py-3">
+			<div class="flex items-center justify-end gap-2 px-5 pt-2 pb-4">
 				<button
 					type="button"
 					onclick={close}

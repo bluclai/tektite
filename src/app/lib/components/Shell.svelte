@@ -50,15 +50,21 @@
             return;
         }
     }
+
+    function onOpenPalette() {
+        commandPaletteOpen = true;
+    }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
 
-<div class="flex h-full flex-col overflow-hidden">
+<div class="flex h-full flex-col overflow-hidden" class:editor--focus={workspaceStore.focusMode}>
     <Titlebar title={titlebarTitle} />
     <div class="flex flex-1 overflow-hidden">
-        <ActivityBar />
-        <Sidebar />
+        {#if !workspaceStore.focusMode}
+            <ActivityBar />
+            <Sidebar onopenPalette={onOpenPalette} />
+        {/if}
         <div class="flex-1 overflow-hidden bg-surface">
             {@render children?.()}
         </div>

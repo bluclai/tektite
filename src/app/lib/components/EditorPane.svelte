@@ -31,7 +31,10 @@
     import { editorStore } from '$lib/stores/editor.svelte';
     import { vaultStore } from '$lib/stores/vault.svelte';
     import { workspaceStore } from '$lib/stores/workspace.svelte';
+    import { auraStore } from '$lib/stores/aura.svelte';
+    import { AURA_CONTINUE_EVENT } from '$lib/stores/commands.svelte';
     import AmbiguousLinkDialog from '$lib/components/AmbiguousLinkDialog.svelte';
+    import AuraSuggestion from '$lib/components/AuraSuggestion.svelte';
 
     // ---------------------------------------------------------------------------
     // Props
@@ -86,6 +89,50 @@
 
     let lastSavedContent = $state('');
     let loadError = $state<string | null>(null);
+    let currentContent = $state('');
+
+    // ---------------------------------------------------------------------------
+    // Doc header — derived from frontmatter + filename. Not editable.
+    // ---------------------------------------------------------------------------
+
+    interface DocHeader {
+        eyebrow: string;
+        title: string;
+        subtitle: string | null;
+    }
+
+    const filenameFromPath = $derived(path.split('/').pop()?.replace(/\.md$/i, '') ?? 'Untitled');
+
+    const docHeader = $derived.by<DocHeader | null>(() => {
+        const fm = parseFrontmatter(currentContent);
+        // Only render the derived doc header when the frontmatter opts in.
+        if (!fm.kind && !fm.title && !fm.subtitle) return null;
+        const eyebrow = fm.kind ?? 'Note';
+        const title = fm.title ?? firstH1(currentContent) ?? filenameFromPath;
+        const subtitle = fm.subtitle ?? null;
+        return { eyebrow, title, subtitle };
+    });
+
+    function parseFrontmatter(content: string): Record<string, string> {
+        const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        if (!match) return {};
+        const out: Record<string, string> = {};
+        for (const line of match[1].split(/\r?\n/)) {
+            const m = line.match(/^([A-Za-z0-9_-]+):\s*(.+?)\s*$/);
+            if (!m) continue;
+            let value = m[2];
+            if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+                value = value.slice(1, -1);
+            }
+            out[m[1].toLowerCase()] = value;
+        }
+        return out;
+    }
+
+    function firstH1(content: string): string | null {
+        const match = content.match(/^#\s+(.+?)\s*$/m);
+        return match ? match[1] : null;
+    }
 
     // External change conflict banner (non-modal) — surfaces when the file
     // changes on disk while the editor has it open.
@@ -311,9 +358,36 @@
     // CM6 update listener — fires on every document change
     // ---------------------------------------------------------------------------
 
+    function countWords(text: string): number {
+        const stripped = text
+            .replace(/^---[\s\S]*?---\n?/, '')
+            .replace(/```[\s\S]*?```/g, '')
+            .replace(/`[^`]*`/g, '')
+            .replace(/\[\[([^\]]+)\]\]/g, '$1')
+            .replace(/[#>*_`~\-]/g, ' ');
+        const words = stripped.match(/\b[\p{L}\p{N}][\p{L}\p{N}'-]*\b/gu);
+        return words ? words.length : 0;
+    }
+
+    function publishDocMetrics(state: EditorState) {
+        const doc = state.doc;
+        const head = state.selection.main.head;
+        const lineObj = doc.lineAt(head);
+        editorStore.setDocMetrics(countWords(doc.toString()), lineObj.number, head - lineObj.from + 1);
+    }
+
     const saveListener = EditorView.updateListener.of((update) => {
         if (update.docChanged) {
-            scheduleAutosave(update.state.doc.toString());
+            const content = update.state.doc.toString();
+            currentContent = content;
+            scheduleAutosave(content);
+            // Document mutated — any pending Aura suggestion is now stale
+            // (its anchor offset would be wrong). Dismiss to avoid inserting
+            // at a bogus position.
+            if (auraStore.state !== 'idle') auraStore.dismiss();
+        }
+        if (update.docChanged || update.selectionSet) {
+            publishDocMetrics(update.state);
         }
     });
 
@@ -328,6 +402,73 @@
                 flushSave();
                 return true;
             },
+        },
+    ]);
+
+    // ---------------------------------------------------------------------------
+    // Aura — generative continuation. Mod-/ requests; Tab accepts; Esc dismisses.
+    // ---------------------------------------------------------------------------
+
+    function computeAuraAnchor(): { top: number; left: number; width: number } | null {
+        if (!view) return null;
+        const head = view.state.selection.main.head;
+        const coords = view.coordsAtPos(head);
+        if (!coords) return null;
+        const contentEl = view.contentDOM;
+        const rect = contentEl.getBoundingClientRect();
+        const style = getComputedStyle(contentEl);
+        const padLeft = parseFloat(style.paddingLeft) || 0;
+        const padRight = parseFloat(style.paddingRight) || 0;
+        const left = rect.left + padLeft;
+        const width = Math.min(680, rect.width - padLeft - padRight);
+        const top = coords.bottom + 8;
+        return { top, left, width };
+    }
+
+    function requestAura(): boolean {
+        if (!view) return false;
+        if (auraStore.state !== 'idle') return true;
+        const anchor = computeAuraAnchor();
+        if (!anchor) return true;
+        const head = view.state.selection.main.head;
+        void auraStore.request(path, head, anchor);
+        return true;
+    }
+
+    function acceptAura(): boolean {
+        const accepted = auraStore.accept();
+        if (!accepted || !view) return false;
+        // Only insert if the accept is targeting this pane's file. Otherwise
+        // silently drop (shouldn't happen in normal flow — the request is
+        // always paired with the active pane's view).
+        if (accepted.path !== path) return false;
+        const offset = Math.min(accepted.offset, view.state.doc.length);
+        view.dispatch({
+            changes: { from: offset, insert: accepted.text },
+            selection: { anchor: offset + accepted.text.length },
+            scrollIntoView: true,
+        });
+        return true;
+    }
+
+    function dismissAura(): boolean {
+        if (auraStore.state === 'idle') return false;
+        auraStore.dismiss();
+        return true;
+    }
+
+    const auraKeymap = keymap.of([
+        {
+            key: 'Mod-/',
+            run: () => requestAura(),
+        },
+        {
+            key: 'Tab',
+            run: () => (auraStore.state === 'ready' ? acceptAura() : false),
+        },
+        {
+            key: 'Escape',
+            run: () => dismissAura(),
         },
     ]);
 
@@ -358,6 +499,12 @@
             // Wrap long lines — eliminates horizontal scrolling entirely.
             // Column width is capped in the theme via .cm-content max-width.
             lineWrapping,
+
+            // --- Aura keymap (Mod-/, Tab accept, Esc dismiss) — must precede
+            // indentWithTab and the default keymap so it can intercept Tab/Esc
+            // when a suggestion is active. Returns false to fall through when
+            // the suggestion store is idle.
+            auraKeymap,
 
             // --- Keymaps (ordered: most specific first) ---
             keymap.of([
@@ -394,6 +541,7 @@
             try {
                 initialContent = await invoke<string>('editor_read_file', { path });
                 lastSavedContent = initialContent;
+                currentContent = initialContent;
                 loadError = null;
                 editorStore.setSaveState('saved', { detail: 'File opened', target: path });
             } catch (error) {
@@ -413,6 +561,8 @@
                 state,
                 parent: containerEl!,
             });
+
+            publishDocMetrics(view.state);
 
             // Derive vault-relative path for proximity tiebreaking.
             const vaultRoot = vaultStore.path ?? '';
@@ -443,6 +593,21 @@
             });
         })();
 
+        const onAuraRequest = () => {
+            // Only the pane whose path matches the active file should respond,
+            // otherwise background panes would race to serve the suggestion.
+            const activeAbs = workspaceStore.activeFilePath
+                ? (vaultStore.path
+                    ? `${vaultStore.path}/${workspaceStore.activeFilePath}`
+                    : workspaceStore.activeFilePath)
+                : null;
+            if (activeAbs !== path) return;
+            if (!view) return;
+            view.focus();
+            requestAura();
+        };
+        window.addEventListener(AURA_CONTINUE_EVENT, onAuraRequest);
+
         let unlistenExternal: UnlistenFn | null = null;
         void listen<{ paths: string[] }>('vault-files-changed', (event) => {
             const currentRel = relativePathForCurrentFile();
@@ -461,6 +626,8 @@
             destroyed = true;
             flushPendingAutosaveOnTeardown();
             unlistenExternal?.();
+            window.removeEventListener(AURA_CONTINUE_EVENT, onAuraRequest);
+            if (auraStore.path === path) auraStore.dismiss();
             view?.destroy();
             view = null;
         };
@@ -476,7 +643,11 @@
     The editor container fills the pane. CM6 appends its own DOM into this div.
     overflow-hidden prevents double scrollbars — CM6 manages its own scroll.
 -->
-<div class="relative h-full w-full overflow-hidden" aria-label="Editor">
+<div
+    class="relative flex h-full w-full flex-col overflow-hidden"
+    class:editor-has-header={docHeader !== null}
+    aria-label="Editor"
+>
     {#if loadError}
         <div class="absolute inset-x-4 top-4 z-20 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200 shadow-[0_12px_32px_rgba(0,0,0,0.22)]">
             Couldn’t open this file: {loadError}
@@ -513,7 +684,21 @@
         </div>
     {/if}
 
-    <div bind:this={containerEl} class="h-full w-full overflow-hidden"></div>
+    {#if docHeader}
+        <div class="shrink-0" style="padding: 72px 128px 0 128px;">
+            <div style="max-width: 680px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px;">
+                <span class="eyebrow">{docHeader.eyebrow}</span>
+                <h1 class="doc-title" style="margin: 0;">{docHeader.title}</h1>
+                {#if docHeader.subtitle}
+                    <p class="doc-subtitle" style="margin: 0; color: var(--color-text-secondary);">{docHeader.subtitle}</p>
+                {/if}
+            </div>
+        </div>
+    {/if}
+
+    <div bind:this={containerEl} class="min-h-0 flex-1 w-full overflow-hidden"></div>
+
+    <AuraSuggestion />
 </div>
 
 <!-- Ambiguous link disambiguation dialog -->

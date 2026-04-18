@@ -33,7 +33,7 @@
 <div class="relative flex shrink-0 items-center">
     <button
         bind:this={buttonEl}
-        class="flex h-full items-center gap-1 border-l border-outline-variant/15 bg-surface-container-low px-2 text-on-surface-variant transition-colors duration-150 ease-out hover:bg-surface-container hover:text-on-surface"
+        class="flex h-full items-center gap-1 bg-surface-container-low px-2 text-on-surface-variant transition-colors duration-200 ease-out hover:bg-surface-container hover:text-on-surface"
         onclick={toggle}
         aria-label="Show all tabs"
         aria-expanded={open}
