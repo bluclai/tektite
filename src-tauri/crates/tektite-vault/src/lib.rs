@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use walkdir::WalkDir;
 
+use tektite_embed::{EmbedService, Embedder, Priority};
 use tektite_index::{rewrite_content, Index};
 
 pub use tektite_index::{IndexError, RenameEdit, RenamePlan};
@@ -83,14 +84,27 @@ pub struct Vault {
     pub write_tokens: watcher::WriteTokenSet,
     /// Live SQLite index for the vault. Stored in `.tektite/index.db`.
     pub index: Option<Index>,
+    /// Semantic index (chunks + vectors) over the same database. `None` if
+    /// the embedder failed to initialise — the rest of the vault keeps
+    /// working, semantic search simply returns empty results.
+    pub embed: Option<EmbedService>,
 }
 
 impl Vault {
-    /// Opens a vault at `root`. Returns an error if the path is not a directory.
+    /// Opens a vault at `root` with the caller-provided embedder.
     ///
     /// Creates the `.tektite/` metadata directory if it doesn't exist and
-    /// opens (or creates) the index database.
-    pub fn open(root: impl AsRef<Path>) -> Result<Self, VaultError> {
+    /// opens (or creates) the index database. The embedder is injected so
+    /// production callers can wire in `OnnxEmbedder` while tests use
+    /// `FakeEmbedder` deterministically.
+    ///
+    /// For background-mode embedding (Phase 3), prefer
+    /// [`open_with_embed_service`] and construct the [`EmbedService`] with
+    /// [`EmbedService::open_background`] in the Tauri layer.
+    pub fn open(
+        root: impl AsRef<Path>,
+        embedder: Box<dyn Embedder>,
+    ) -> Result<Self, VaultError> {
         let root = root.as_ref().canonicalize().map_err(VaultError::Io)?;
         if !root.is_dir() {
             return Err(VaultError::Io(std::io::Error::new(
@@ -99,19 +113,71 @@ impl Vault {
             )));
         }
 
-        // Ensure the .tektite metadata directory exists.
         let meta_dir = root.join(".tektite");
         std::fs::create_dir_all(&meta_dir)?;
 
-        // Open the index database.
         let db_path = meta_dir.join("index.db");
-        let index = Index::open(&db_path).ok(); // non-fatal — vault still opens without index
+        let index = Index::open(&db_path).ok();
+
+        let embed = if index.is_some() {
+            match EmbedService::open(&db_path, embedder) {
+                Ok(svc) => Some(svc),
+                Err(e) => {
+                    tracing::warn!("embed service unavailable: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         Ok(Self {
             root,
             write_tokens: watcher::WriteTokenSet::new(),
             index,
+            embed,
         })
+    }
+
+    /// Opens a vault without an embed service, then lets the caller
+    /// attach one via [`set_embed_service`]. Use when the caller needs
+    /// control over the embed service configuration (e.g. background
+    /// mode with progress callbacks) but the Index must be opened first
+    /// to run migrations that create the `chunks` table.
+    pub fn open_without_embed(
+        root: impl AsRef<Path>,
+    ) -> Result<Self, VaultError> {
+        let root = root.as_ref().canonicalize().map_err(VaultError::Io)?;
+        if !root.is_dir() {
+            return Err(VaultError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("vault root not found: {}", root.display()),
+            )));
+        }
+
+        let meta_dir = root.join(".tektite");
+        std::fs::create_dir_all(&meta_dir)?;
+
+        let db_path = meta_dir.join("index.db");
+        let index = Index::open(&db_path).ok();
+
+        Ok(Self {
+            root,
+            write_tokens: watcher::WriteTokenSet::new(),
+            index,
+            embed: None,
+        })
+    }
+
+    /// Attaches an [`EmbedService`] after the vault (and its Index) have
+    /// been opened. Call this before [`scan_and_index`](Self::scan_and_index).
+    pub fn set_embed_service(&mut self, svc: EmbedService) {
+        self.embed = Some(svc);
+    }
+
+    /// Returns the path to the index database.
+    pub fn db_path(&self) -> PathBuf {
+        self.root.join(".tektite").join("index.db")
     }
 
     // -----------------------------------------------------------------------
@@ -259,7 +325,17 @@ impl Vault {
                 }
             };
             let parsed = tektite_parser::parse(&content);
-            index.upsert(&rel, mtime, &parsed)?;
+            let file_id = index.upsert(&rel, mtime, &parsed)?;
+
+            if let Some(embed) = self.embed.as_ref() {
+                let title = note_title(&rel, &parsed);
+                // Vault-open backlog uses Normal priority. In background
+                // mode this is non-blocking — the queue worker will process
+                // it later.
+                if let Err(e) = embed.reindex_file(&file_id, &title, &parsed) {
+                    tracing::warn!("embed reindex failed for {rel}: {e}");
+                }
+            }
         }
         Ok(())
     }
@@ -290,7 +366,21 @@ impl Vault {
         let content = std::fs::read_to_string(abs_path).map_err(VaultError::Io)?;
         let mtime = file_mtime(abs_path);
         let parsed = tektite_parser::parse(&content);
-        index.upsert(&rel, mtime, &parsed)?;
+        let file_id = index.upsert(&rel, mtime, &parsed)?;
+
+        if let Some(embed) = self.embed.as_ref() {
+            let title = note_title(&rel, &parsed);
+            // Live edits from the watcher get High priority so they jump
+            // ahead of any vault-open backlog.
+            if let Err(e) = embed.reindex_file_with_priority(
+                &file_id,
+                &title,
+                &parsed,
+                Priority::High,
+            ) {
+                tracing::warn!("embed reindex failed for {rel}: {e}");
+            }
+        }
         Ok(())
     }
 
@@ -302,16 +392,29 @@ impl Vault {
         if !is_markdown(abs_path) {
             return Ok(());
         }
-        let index = match self.index.as_mut() {
-            Some(i) => i,
-            None => return Ok(()),
-        };
         let rel = abs_path
             .strip_prefix(&self.root)
             .map_err(|_| VaultError::OutsideRoot)?
             .to_string_lossy()
             .replace('\\', "/");
+
+        // Resolve the file id *before* removing from the index so we can
+        // purge the embed cache by id. The DB rows in `chunks` cascade
+        // automatically when the `files` row is dropped.
+        let file_id = self
+            .index
+            .as_ref()
+            .and_then(|idx| idx.id_for_path(&rel).ok().flatten());
+
+        let index = match self.index.as_mut() {
+            Some(i) => i,
+            None => return Ok(()),
+        };
         index.remove_file(&rel)?;
+
+        if let (Some(id), Some(embed)) = (file_id, self.embed.as_ref()) {
+            embed.forget_file(&id);
+        }
         Ok(())
     }
 
@@ -594,6 +697,23 @@ fn is_markdown(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("md"))
 }
 
+/// Best-effort display title for a note. Prefers `frontmatter.title`, else
+/// the filename stem. Used by the embedder (Phase 2 will prefix chunks
+/// with this).
+fn note_title(rel_path: &str, note: &tektite_parser::ParsedNote) -> String {
+    if let Some(title) = note.frontmatter.get("title").and_then(|v| v.as_str()) {
+        let trimmed = title.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    Path::new(rel_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(rel_path)
+        .to_string()
+}
+
 fn normalize_rel_path(rel_path: &str) -> Result<String, VaultError> {
     let rel = rel_path.trim().replace('\\', "/");
     if rel.is_empty() {
@@ -649,7 +769,7 @@ mod tests {
     #[test]
     fn read_and_write_file_round_trip_inside_vault() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let vault = Vault::open(dir.path()).expect("open vault");
+        let vault = Vault::open(dir.path(), Box::new(tektite_embed::FakeEmbedder::new())).expect("open vault");
 
         vault
             .write_file("notes/today.md", "hello from tektite")
@@ -664,7 +784,7 @@ mod tests {
     #[test]
     fn write_file_rejects_paths_outside_vault_root() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let vault = Vault::open(dir.path()).expect("open vault");
+        let vault = Vault::open(dir.path(), Box::new(tektite_embed::FakeEmbedder::new())).expect("open vault");
 
         let err = vault
             .write_file("../escape.md", "nope")
@@ -676,7 +796,7 @@ mod tests {
     #[test]
     fn create_file_rejects_invalid_relative_paths() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let vault = Vault::open(dir.path()).expect("open vault");
+        let vault = Vault::open(dir.path(), Box::new(tektite_embed::FakeEmbedder::new())).expect("open vault");
 
         let err = vault
             .create_file("notes//today.md", None)
@@ -688,7 +808,7 @@ mod tests {
     #[test]
     fn create_file_rejects_duplicate_paths() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let vault = Vault::open(dir.path()).expect("open vault");
+        let vault = Vault::open(dir.path(), Box::new(tektite_embed::FakeEmbedder::new())).expect("open vault");
 
         vault
             .create_file("notes/today.md", None)
@@ -706,7 +826,7 @@ mod tests {
     #[test]
     fn plan_rename_rejects_existing_destination() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut vault = Vault::open(dir.path()).expect("open vault");
+        let mut vault = Vault::open(dir.path(), Box::new(tektite_embed::FakeEmbedder::new())).expect("open vault");
 
         std::fs::write(dir.path().join("old.md"), "# Old\n").unwrap();
         std::fs::write(dir.path().join("new.md"), "# New\n").unwrap();
@@ -724,7 +844,7 @@ mod tests {
     #[test]
     fn apply_rename_rejects_stale_preview() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut vault = Vault::open(dir.path()).expect("open vault");
+        let mut vault = Vault::open(dir.path(), Box::new(tektite_embed::FakeEmbedder::new())).expect("open vault");
 
         std::fs::write(dir.path().join("target.md"), "# Target\n").unwrap();
         std::fs::write(dir.path().join("source.md"), "[[target]]\n").unwrap();
@@ -748,7 +868,7 @@ mod tests {
     #[test]
     fn delete_removes_file_and_index_entry() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut vault = Vault::open(dir.path()).expect("open vault");
+        let mut vault = Vault::open(dir.path(), Box::new(tektite_embed::FakeEmbedder::new())).expect("open vault");
 
         std::fs::write(dir.path().join("g.md"), "# Gone\n").unwrap();
         vault.scan_and_index().expect("scan vault");
@@ -777,5 +897,116 @@ mod tests {
             .id_for_path("g.md")
             .expect("index reachable");
         assert!(still_there.is_none(), "index entry must be cleared after delete");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1 — semantic index integration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn scan_populates_embed_cache_and_search_returns_hits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut vault = Vault::open(dir.path(), Box::new(tektite_embed::FakeEmbedder::new())).expect("open vault");
+
+        std::fs::write(dir.path().join("a.md"), "# Alpha\nfirst body\n").unwrap();
+        std::fs::write(dir.path().join("b.md"), "# Bravo\nsecond body\n").unwrap();
+        vault.scan_and_index().expect("scan vault");
+
+        let embed = vault.embed.as_ref().expect("embed service available");
+        // Two notes × one chunk each → two cached vectors.
+        assert_eq!(embed.cache().len(), 2);
+
+        // Searching for the exact text of a chunk must surface that chunk
+        // first (FakeEmbedder is deterministic on identical input).
+        let hits = embed
+            .search_semantic("# Alpha\nfirst body", 5)
+            .expect("search ok");
+        assert!(!hits.is_empty(), "expected at least one hit");
+        assert_eq!(hits[0].file_path, "a.md");
+        assert_eq!(hits[0].heading_path.as_deref(), Some("Alpha"));
+    }
+
+    #[test]
+    fn unchanged_save_reuses_chunk_ids_and_skips_re_embedding() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut vault = Vault::open(dir.path(), Box::new(tektite_embed::FakeEmbedder::new())).expect("open vault");
+
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, "# Same\nbody\n").unwrap();
+        vault.scan_and_index().expect("scan vault");
+
+        let file_id = vault
+            .index
+            .as_ref()
+            .unwrap()
+            .id_for_path("note.md")
+            .unwrap()
+            .expect("file indexed");
+        let before = vault
+            .embed
+            .as_ref()
+            .unwrap()
+            .store()
+            .chunks_for_file(&file_id)
+            .unwrap();
+        assert_eq!(before.len(), 1);
+        let original_id = before[0].id.clone();
+
+        // Re-trigger reindex with identical content. Same content_hash →
+        // existing chunk row's id is preserved.
+        vault.reindex_file(&path).expect("reindex");
+
+        let after = vault
+            .embed
+            .as_ref()
+            .unwrap()
+            .store()
+            .chunks_for_file(&file_id)
+            .unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, original_id, "chunk id must be reused");
+    }
+
+    #[test]
+    fn delete_cascades_chunks_and_clears_cache() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut vault = Vault::open(dir.path(), Box::new(tektite_embed::FakeEmbedder::new())).expect("open vault");
+
+        std::fs::write(dir.path().join("a.md"), "# A\nbody\n").unwrap();
+        vault.scan_and_index().expect("scan vault");
+
+        let file_id = vault
+            .index
+            .as_ref()
+            .unwrap()
+            .id_for_path("a.md")
+            .unwrap()
+            .expect("indexed");
+        assert_eq!(vault.embed.as_ref().unwrap().cache().len(), 1);
+        assert_eq!(
+            vault
+                .embed
+                .as_ref()
+                .unwrap()
+                .store()
+                .chunks_for_file(&file_id)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let abs = vault.absolute_path("a.md").unwrap();
+        vault.remove_from_index(&abs).expect("remove");
+
+        // Cache purged + cascade dropped the row.
+        assert_eq!(vault.embed.as_ref().unwrap().cache().len(), 0);
+        assert!(vault
+            .embed
+            .as_ref()
+            .unwrap()
+            .store()
+            .chunks_for_file(&file_id)
+            .unwrap()
+            .is_empty());
     }
 }

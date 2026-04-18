@@ -52,7 +52,7 @@
             {#each recentVaults as entry (entry.path)}
                 <li>
                     <button
-                        class="flex w-full cursor-pointer items-center justify-between rounded-[4px] border-none bg-transparent px-2 py-1.5 text-left text-on-surface transition-colors duration-150 ease-out hover:bg-surface-container-high {entry.path === vaultStore.path ? 'text-primary' : ''}"
+                        class="flex w-full cursor-pointer items-center justify-between rounded-[4px] border-none bg-transparent px-2 py-1.5 text-left text-on-surface transition-colors duration-200 ease-out hover:bg-surface-container-high {entry.path === vaultStore.path ? 'text-primary' : ''}"
                         onclick={() => selectRecent(entry)}
                     >
                         <span class="truncate text-sm">{entry.name}</span>
@@ -70,7 +70,7 @@
     <div class="my-1 h-px bg-outline-variant/30"></div>
 
     <button
-        class="flex w-full cursor-pointer items-center gap-2 rounded-[4px] border-none bg-transparent px-2 py-1.5 text-left text-sm text-on-surface-variant transition-colors duration-150 ease-out hover:bg-surface-container-high hover:text-on-surface"
+        class="flex w-full cursor-pointer items-center gap-2 rounded-[4px] border-none bg-transparent px-2 py-1.5 text-left text-sm text-on-surface-variant transition-colors duration-200 ease-out hover:bg-surface-container-high hover:text-on-surface"
         onclick={pickFolder}
     >
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" class="shrink-0">

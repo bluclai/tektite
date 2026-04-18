@@ -92,7 +92,7 @@
 
 <div class="flex h-full flex-col overflow-hidden bg-surface">
 	<!-- Search input -->
-	<div class="border-b border-outline-variant/20 p-3">
+	<div class="p-3 pb-4">
 		<input
 			type="text"
 			bind:value={query}

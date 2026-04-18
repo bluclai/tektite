@@ -2,14 +2,23 @@
     /**
      * FileExplorer — Files sidebar panel.
      *
-     * Renders the vault directory tree, opens markdown files into the active
-     * tab on click, and provides inline new-file / new-folder actions.
-     * Context menu provides rename and delete.
+     * Renders the pinned rows + vault directory tree, opens markdown files
+     * into the active tab on click, and provides inline new-file / new-folder
+     * actions. Context menu provides pin, rename, and delete.
      */
-    import { ChevronRight, File, FileText, FolderClosed, FolderOpen } from 'lucide-svelte';
+    import {
+        ChevronRight,
+        File,
+        FileText,
+        FolderClosed,
+        FolderOpen,
+        Plus,
+        Pin,
+    } from 'lucide-svelte';
     import { filesStore, type TreeEntry } from '$lib/stores/files.svelte';
     import { workspaceStore } from '$lib/stores/workspace.svelte';
     import { vaultStore } from '$lib/stores/vault.svelte';
+    import { pinnedStore } from '$lib/stores/pinned-notes.svelte';
     import RenameDialog from '$lib/components/RenameDialog.svelte';
     import DeleteDialog from '$lib/components/DeleteDialog.svelte';
     import {
@@ -26,19 +35,12 @@
         changed_paths: string[];
     }
 
-    // ---------------------------------------------------------------------------
-    // Collapse state
-    // ---------------------------------------------------------------------------
-
     let collapsed = $state<Set<string>>(new Set());
 
     function toggleDir(path: string) {
         const next = new Set(collapsed);
-        if (next.has(path)) {
-            next.delete(path);
-        } else {
-            next.add(path);
-        }
+        if (next.has(path)) next.delete(path);
+        else next.add(path);
         collapsed = next;
     }
 
@@ -90,9 +92,7 @@
     }
 
     async function commitCreate() {
-        if (!pendingCreate) {
-            return;
-        }
+        if (!pendingCreate) return;
 
         const normalizedName = normalizeCreateName(pendingCreateName, pendingCreate.type);
         if (!normalizedName) {
@@ -154,7 +154,7 @@
     }
 
     // ---------------------------------------------------------------------------
-    // Rename dialog state
+    // Rename / delete state
     // ---------------------------------------------------------------------------
 
     let renameDialogOpen = $state(false);
@@ -167,6 +167,7 @@
 
     function handleRename(result: RenameResult) {
         workspaceStore.renamePath(result.old_path, result.new_path);
+        pinnedStore.renamePath(result.old_path, result.new_path);
 
         const vaultRoot = vaultStore.path;
         if (vaultRoot) {
@@ -177,10 +178,6 @@
         renameTarget = null;
     }
 
-    // ---------------------------------------------------------------------------
-    // Delete dialog state
-    // ---------------------------------------------------------------------------
-
     let deleteDialogOpen = $state(false);
     let deleteTarget = $state<TreeEntry | null>(null);
 
@@ -188,65 +185,99 @@
         deleteTarget = entry;
         deleteDialogOpen = true;
     }
+
+    // ---------------------------------------------------------------------------
+    // Active file + pinned rows
+    // ---------------------------------------------------------------------------
+
+    const activeRelPath = $derived.by<string | null>(() => {
+        const abs = workspaceStore.activeFilePath;
+        if (!abs) return null;
+        const root = vaultStore.path;
+        if (root && abs.startsWith(root + '/')) return abs.slice(root.length + 1);
+        return abs;
+    });
+
+    function countDescendants(entries: TreeEntry[]): number {
+        let n = 0;
+        for (const e of entries) {
+            if (e.is_dir) n += countDescendants(e.children);
+            else n += 1;
+        }
+        return n;
+    }
+
+    function flattenPaths(entries: TreeEntry[], out: Map<string, TreeEntry> = new Map()) {
+        for (const e of entries) {
+            if (!e.is_dir) out.set(e.path, e);
+            else flattenPaths(e.children, out);
+        }
+        return out;
+    }
+
+    const pathIndex = $derived(flattenPaths(filesStore.tree));
+
+    const pinnedEntries = $derived(
+        pinnedStore.paths
+            .map((p) => pathIndex.get(p))
+            .filter((e): e is TreeEntry => !!e),
+    );
 </script>
 
-<div class="flex h-full flex-col overflow-hidden">
-    <div class="flex h-8 shrink-0 items-center gap-0.5 px-2">
+<div class="flex h-full flex-col overflow-hidden pt-2">
+    <!-- Pinned section -->
+    {#if pinnedEntries.length > 0}
+        <div class="flex h-6 shrink-0 items-center gap-2 px-4">
+            <span class="eyebrow">Pinned</span>
+            <span class="font-sans text-[10.5px] text-text-faint">{pinnedEntries.length}</span>
+        </div>
+        <div class="flex shrink-0 flex-col gap-0.5 px-2 pt-1 pb-2">
+            {#each pinnedEntries as entry (entry.path)}
+                {@render fileRow(entry, 0, true)}
+            {/each}
+        </div>
+    {/if}
+
+    <!-- Vault section -->
+    <div class="flex h-6 shrink-0 items-center gap-2 px-4">
+        <span class="eyebrow">Vault</span>
         <span class="flex-1"></span>
-
         <button
-            class="flex h-6 w-6 items-center justify-center rounded text-on-surface-variant opacity-50 transition-opacity duration-150 hover:opacity-100 hover:bg-surface-container-high"
-            title="New file"
+            class="flex h-5 w-5 cursor-pointer items-center justify-center rounded border-none bg-transparent text-text-ghost transition-colors duration-200 ease-out hover:text-text-secondary"
             onclick={(e) => { e.stopPropagation(); startCreate('', 'file'); }}
-            aria-label="New file"
+            aria-label="New note"
+            title="New note"
         >
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
-                <path d="M2 2a1 1 0 0 1 1-1h4.5L10 3.5V11a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V2Z" stroke="currentColor" stroke-width="1.2"/>
-                <path d="M7 1v3h3" stroke="currentColor" stroke-width="1.2"/>
-                <line x1="6.5" y1="6" x2="6.5" y2="9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-                <line x1="5" y1="7.5" x2="8" y2="7.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-            </svg>
-        </button>
-
-        <button
-            class="flex h-6 w-6 items-center justify-center rounded text-on-surface-variant opacity-50 transition-opacity duration-150 hover:opacity-100 hover:bg-surface-container-high"
-            title="New folder"
-            onclick={(e) => { e.stopPropagation(); startCreate('', 'folder'); }}
-            aria-label="New folder"
-        >
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
-                <path d="M1 3.5C1 3 1.4 2.5 2 2.5h3l1 1.5h5.5c.6 0 1 .5 1 1V10c0 .5-.4 1-1 1H2c-.6 0-1-.5-1-1V3.5Z" stroke="currentColor" stroke-width="1.2"/>
-                <line x1="7" y1="6" x2="7" y2="9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-                <line x1="5.5" y1="7.5" x2="8.5" y2="7.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-            </svg>
+            <Plus size={12} strokeWidth={1.75} />
         </button>
     </div>
 
     {#if pendingCreate?.parentPath === ''}
-        <div class="px-2 pb-0.5">
+        <div class="px-3 pt-1 pb-1">
             <input
                 bind:this={createInputEl}
                 bind:value={pendingCreateName}
                 onkeydown={onCreateKeydown}
                 onblur={cancelCreate}
                 placeholder={pendingCreate.type === 'file' ? 'filename.md' : 'folder name'}
-                class="w-full rounded bg-surface-container-high px-2 py-0.5 text-xs text-on-surface outline-none ring-1 ring-primary/50 focus:ring-primary"
+                class="w-full rounded-[6px] px-2 py-1 font-sans text-[12px] text-text-primary outline-none ring-1 ring-primary/50 focus:ring-primary"
+                style="background-color: rgba(255,255,255,0.04);"
             />
             {#if createError}
-                <p class="pt-1 text-[11px] text-red-400">{createError}</p>
+                <p class="pt-1 font-sans text-[10.5px] text-red-400">{createError}</p>
             {/if}
         </div>
     {/if}
 
-    <div class="flex-1 overflow-y-auto py-0.5" role="tree" aria-label="Vault files">
+    <div class="flex-1 overflow-y-auto px-2 pb-2" role="tree" aria-label="Vault files">
         {#if filesStore.error}
-            <p class="px-4 py-2 text-xs text-red-400">{filesStore.error}</p>
+            <p class="px-2 py-2 font-sans text-[11px] text-red-400">{filesStore.error}</p>
         {/if}
 
         {#if filesStore.loading && filesStore.tree.length === 0}
-            <p class="px-4 py-2 text-xs text-on-surface-variant opacity-40">Loading…</p>
+            <p class="px-2 py-2 font-sans text-[11px] text-text-ghost">Loading…</p>
         {:else if filesStore.tree.length === 0}
-            <p class="px-4 py-2 text-xs text-on-surface-variant opacity-40">Empty vault</p>
+            <p class="px-2 py-2 font-sans text-[11px] text-text-ghost">Empty vault</p>
         {:else}
             {#each filesStore.tree as entry (entry.path)}
                 {@render treeNode(entry, 0)}
@@ -255,122 +286,157 @@
     </div>
 </div>
 
+{#snippet fileRow(entry: TreeEntry, depth: number, inPinned: boolean)}
+    {@const isActive = activeRelPath === entry.path}
+    {@const isMd = entry.is_markdown}
+    <ContextMenu>
+        <ContextMenuTrigger>
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+                role="treeitem"
+                aria-selected={isActive}
+                tabindex="0"
+                class="group relative flex h-[26px] cursor-pointer select-none items-center gap-1.5 rounded-[6px] pr-2 font-sans text-[13px] transition-colors duration-200 ease-out {isActive ? 'text-text-primary' : !isMd ? 'text-text-ghost' : 'text-text-secondary hover:bg-[rgba(255,255,255,0.03)]'}"
+                style="padding-left: {24 + depth * 12}px; {isActive ? 'background: linear-gradient(90deg, rgba(189,194,255,0.08) 0%, rgba(189,194,255,0.02) 100%);' : ''}"
+                onclick={() => openFile(entry)}
+            >
+                {#if isActive}
+                    <span
+                        class="pointer-events-none absolute top-1/2 left-0 h-4 w-[2px] -translate-y-1/2 rounded-r-full"
+                        style="background-color: var(--color-primary); box-shadow: 0 0 6px rgba(189,194,255,0.55);"
+                        aria-hidden="true"
+                    ></span>
+                {/if}
+                {#if isMd}
+                    <FileText size={13} strokeWidth={1.5} class="shrink-0 text-text-muted" aria-hidden="true" />
+                {:else}
+                    <File size={13} strokeWidth={1.5} class="shrink-0 text-text-ghost" aria-hidden="true" />
+                {/if}
+                <span class="min-w-0 flex-1 truncate">{entry.name.replace(/\.md$/i, '')}</span>
+            </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+            {#if isMd}
+                <ContextMenuItem onselect={() => pinnedStore.toggle(entry.path)}>
+                    {pinnedStore.has(entry.path) ? 'Unpin' : 'Pin'}
+                </ContextMenuItem>
+                <ContextMenuSeparator />
+            {/if}
+            <ContextMenuItem onselect={() => startRename(entry)}>Rename</ContextMenuItem>
+            <ContextMenuItem variant="destructive" onselect={() => startDelete(entry)}>
+                Delete
+            </ContextMenuItem>
+        </ContextMenuContent>
+    </ContextMenu>
+{/snippet}
+
 {#snippet treeNode(entry: TreeEntry, depth: number)}
     {@const isCollapsed = collapsed.has(entry.path)}
     {@const isMd = entry.is_markdown}
     {@const openable = canOpen(entry)}
+    {@const isActive = !entry.is_dir && activeRelPath === entry.path}
 
-    <div role="treeitem" aria-expanded={entry.is_dir ? !isCollapsed : undefined} aria-selected="false">
+    <div role="treeitem" aria-expanded={entry.is_dir ? !isCollapsed : undefined} aria-selected={isActive}>
         <ContextMenu>
             <ContextMenuTrigger>
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
                 <div
-                    class="group flex h-6 select-none items-center gap-1.5 rounded px-1 text-xs
-                           transition-colors duration-100 hover:bg-surface-container-high
-                           {openable ? 'cursor-pointer' : 'cursor-default'}
-                           {!isMd && !entry.is_dir ? 'text-on-surface-variant opacity-45' : 'text-on-surface'}"
-                    style="padding-left: {depth * 12 + 4}px"
+                    class="group relative flex h-[26px] select-none items-center gap-1.5 rounded-[6px] pr-2 font-sans text-[13px] transition-colors duration-200 ease-out
+                        {openable ? 'cursor-pointer' : 'cursor-default'}
+                        {isActive
+                            ? 'text-text-primary'
+                            : entry.is_dir
+                                ? 'text-text-secondary hover:bg-[rgba(255,255,255,0.03)]'
+                                : !isMd
+                                    ? 'text-text-ghost'
+                                    : 'text-text-secondary hover:bg-[rgba(255,255,255,0.03)]'}"
+                    style="padding-left: {entry.is_dir ? 8 + depth * 12 : 24 + depth * 12}px; {isActive ? 'background: linear-gradient(90deg, rgba(189,194,255,0.08) 0%, rgba(189,194,255,0.02) 100%);' : ''}"
                     onclick={() => (entry.is_dir ? toggleDir(entry.path) : openFile(entry))}
                     tabindex={openable ? 0 : undefined}
                     role="treeitem"
-                    aria-selected="false"
+                    aria-selected={isActive}
                 >
-            {#if entry.is_dir}
-                <ChevronRight
-                    size={10}
-                    strokeWidth={1.8}
-                    class="shrink-0 text-on-surface-variant transition-transform duration-100 {isCollapsed ? '' : 'rotate-90'}"
-                    aria-hidden="true"
-                />
-                {#if isCollapsed}
-                    <FolderClosed size={13} strokeWidth={1.4} class="shrink-0 text-on-surface-variant opacity-70" aria-hidden="true" />
-                {:else}
-                    <FolderOpen size={13} strokeWidth={1.4} class="shrink-0 text-on-surface-variant opacity-70" aria-hidden="true" />
-                {/if}
-            {:else}
-                <span class="w-2.5 shrink-0" aria-hidden="true"></span>
-                {#if isMd}
-                    <FileText size={13} strokeWidth={1.4} class="shrink-0 text-on-surface-variant opacity-50" aria-hidden="true" />
-                {:else}
-                    <File size={13} strokeWidth={1.4} class="shrink-0 text-on-surface-variant opacity-25" aria-hidden="true" />
-                {/if}
-            {/if}
-
-            <span class="min-w-0 flex-1 truncate">{entry.name}</span>
-
-                <span class="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-100 group-hover:opacity-100">
-                    {#if entry.is_dir}
-                        <button
-                            class="flex h-4 w-4 items-center justify-center rounded text-on-surface-variant hover:text-on-surface"
-                            title="New file in {entry.name}"
-                            onclick={(e) => { e.stopPropagation(); startCreate(entry.path, 'file'); }}
-                            tabindex="-1"
-                            aria-label="New file in {entry.name}"
-                        >
-                            <svg width="9" height="9" viewBox="0 0 9 9" fill="none" aria-hidden="true">
-                                <line x1="4.5" y1="1" x2="4.5" y2="8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-                                <line x1="1" y1="4.5" x2="8" y2="4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-                            </svg>
-                        </button>
-                        <button
-                            class="flex h-4 w-4 items-center justify-center rounded text-on-surface-variant hover:text-on-surface"
-                            title="New folder in {entry.name}"
-                            onclick={(e) => { e.stopPropagation(); startCreate(entry.path, 'folder'); }}
-                            tabindex="-1"
-                            aria-label="New folder in {entry.name}"
-                        >
-                            <svg width="9" height="9" viewBox="0 0 9 9" fill="none" aria-hidden="true">
-                                <line x1="4.5" y1="1" x2="4.5" y2="8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-                                <line x1="1" y1="4.5" x2="8" y2="4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-                            </svg>
-                        </button>
+                    {#if isActive}
+                        <span
+                            class="pointer-events-none absolute top-1/2 left-0 h-4 w-[2px] -translate-y-1/2 rounded-r-full"
+                            style="background-color: var(--color-primary); box-shadow: 0 0 6px rgba(189,194,255,0.55);"
+                            aria-hidden="true"
+                        ></span>
                     {/if}
-                    <button
-                        class="flex h-4 w-4 items-center justify-center rounded text-on-surface-variant hover:text-on-surface"
-                        title="Rename {entry.name}"
-                        onclick={(e) => { e.stopPropagation(); startRename(entry); }}
-                        tabindex="-1"
-                        aria-label="Rename {entry.name}"
-                    >
-                        <svg width="8" height="8" viewBox="0 0 8 8" fill="none" aria-hidden="true">
-                            <path d="M5.5 1 L7 2.5 L2.5 7 L1 7 L1 5.5 Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
-                            <line x1="4.5" y1="2" x2="6" y2="3.5" stroke="currentColor" stroke-width="1.2"/>
-                        </svg>
-                    </button>
-                </span>
-            </div>
+
+                    {#if entry.is_dir}
+                        <ChevronRight
+                            size={11}
+                            strokeWidth={1.75}
+                            class="shrink-0 text-text-muted transition-transform duration-200 {isCollapsed ? '' : 'rotate-90'}"
+                            aria-hidden="true"
+                        />
+                        {#if isCollapsed}
+                            <FolderClosed size={13} strokeWidth={1.5} class="shrink-0 text-text-muted" aria-hidden="true" />
+                        {:else}
+                            <FolderOpen size={13} strokeWidth={1.5} class="shrink-0 text-text-muted" aria-hidden="true" />
+                        {/if}
+                        <span class="min-w-0 flex-1 truncate font-medium">{entry.name}</span>
+                        <span class="ml-1 shrink-0 font-sans text-[10.5px] text-text-faint">
+                            {countDescendants(entry.children)}
+                        </span>
+                    {:else}
+                        {#if isMd}
+                            <FileText size={13} strokeWidth={1.5} class="shrink-0 text-text-muted" aria-hidden="true" />
+                        {:else}
+                            <File size={13} strokeWidth={1.5} class="shrink-0 text-text-ghost" aria-hidden="true" />
+                        {/if}
+                        <span class="min-w-0 flex-1 truncate">{entry.name.replace(/\.md$/i, '')}</span>
+                        {#if isMd && pinnedStore.has(entry.path)}
+                            <Pin size={10} strokeWidth={1.75} class="shrink-0 text-text-ghost" aria-hidden="true" />
+                        {/if}
+                    {/if}
+
+                    <span class="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+                        {#if entry.is_dir}
+                            <button
+                                class="flex h-4 w-4 items-center justify-center rounded border-none bg-transparent text-text-muted hover:text-text-secondary"
+                                title="New file in {entry.name}"
+                                onclick={(e) => { e.stopPropagation(); startCreate(entry.path, 'file'); }}
+                                tabindex="-1"
+                                aria-label="New file in {entry.name}"
+                            >
+                                <Plus size={10} strokeWidth={1.75} />
+                            </button>
+                        {/if}
+                    </span>
+                </div>
             </ContextMenuTrigger>
             <ContextMenuContent>
                 {#if entry.is_dir}
-                    <ContextMenuItem onselect={() => startCreate(entry.path, 'file')}>
-                        New file
-                    </ContextMenuItem>
-                    <ContextMenuItem onselect={() => startCreate(entry.path, 'folder')}>
-                        New folder
+                    <ContextMenuItem onselect={() => startCreate(entry.path, 'file')}>New file</ContextMenuItem>
+                    <ContextMenuItem onselect={() => startCreate(entry.path, 'folder')}>New folder</ContextMenuItem>
+                    <ContextMenuSeparator />
+                {:else if isMd}
+                    <ContextMenuItem onselect={() => pinnedStore.toggle(entry.path)}>
+                        {pinnedStore.has(entry.path) ? 'Unpin' : 'Pin'}
                     </ContextMenuItem>
                     <ContextMenuSeparator />
                 {/if}
-                <ContextMenuItem onselect={() => startRename(entry)}>
-                    Rename
-                </ContextMenuItem>
-                <ContextMenuItem variant="destructive" onselect={() => startDelete(entry)}>
-                    Delete
-                </ContextMenuItem>
+                <ContextMenuItem onselect={() => startRename(entry)}>Rename</ContextMenuItem>
+                <ContextMenuItem variant="destructive" onselect={() => startDelete(entry)}>Delete</ContextMenuItem>
             </ContextMenuContent>
         </ContextMenu>
 
         {#if pendingCreate?.parentPath === entry.path}
-            <div style="padding-left: {(depth + 1) * 12 + 4}px" class="pr-2 pb-0.5">
+            <div style="padding-left: {(depth + 1) * 12 + 24}px" class="pr-2 pt-1 pb-1">
                 <input
                     bind:this={createInputEl}
                     bind:value={pendingCreateName}
                     onkeydown={onCreateKeydown}
                     onblur={cancelCreate}
                     placeholder={pendingCreate.type === 'file' ? 'filename.md' : 'folder name'}
-                    class="w-full rounded bg-surface-container-high px-2 py-0.5 text-xs text-on-surface outline-none ring-1 ring-primary/50 focus:ring-primary"
+                    class="w-full rounded-[6px] px-2 py-1 font-sans text-[12px] text-text-primary outline-none ring-1 ring-primary/50 focus:ring-primary"
+                    style="background-color: rgba(255,255,255,0.04);"
                 />
                 {#if createError}
-                    <p class="pt-1 text-[11px] text-red-400">{createError}</p>
+                    <p class="pt-1 font-sans text-[10.5px] text-red-400">{createError}</p>
                 {/if}
             </div>
         {/if}

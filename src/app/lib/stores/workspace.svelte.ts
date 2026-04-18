@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+
 import {
   type PaneTab,
   type LeafPane,
@@ -27,7 +28,7 @@ export { allLeaves };
 // Panel (sidebar)
 // ---------------------------------------------------------------------------
 
-export type Panel = "files" | "search" | "backlinks" | "unresolved" | "settings";
+export type Panel = "files" | "search" | "backlinks" | "unresolved" | "graph" | "settings";
 
 // ---------------------------------------------------------------------------
 // Workspace persistence shape (version-guarded)
@@ -40,6 +41,7 @@ export interface WorkspaceState {
   sidebarWidth: number;
   activePaneId: string;
   paneTree: PaneLayout;
+  focusMode?: boolean;
 }
 
 const WORKSPACE_VERSION = 1;
@@ -59,6 +61,7 @@ let _sidebarOpen = $state<boolean>(true);
 let _sidebarWidth = $state<number>(SIDEBAR_DEFAULT_WIDTH);
 let _activePaneId = $state<string>(_initialLeaf.id);
 let _paneTree = $state<PaneLayout>(_initialLeaf);
+let _focusMode = $state<boolean>(false);
 
 // Memoized lookup of the active leaf's active tab path. Recomputes only
 // when _paneTree or _activePaneId change rather than on every getter read.
@@ -85,6 +88,7 @@ function scheduleSave() {
         sidebarWidth: _sidebarWidth,
         activePaneId: _activePaneId,
         paneTree: _paneTree,
+        focusMode: _focusMode,
       } satisfies WorkspaceState,
     }).catch(() => {});
     _saveTimer = null;
@@ -114,6 +118,15 @@ export const workspaceStore = {
 
   toggleSidebar() {
     _sidebarOpen = !_sidebarOpen;
+    scheduleSave();
+  },
+
+  get focusMode() {
+    return _focusMode;
+  },
+
+  toggleFocusMode() {
+    _focusMode = !_focusMode;
     scheduleSave();
   },
 
@@ -194,7 +207,7 @@ export const workspaceStore = {
   closeOtherTabs(paneId: string, keepTabId: string) {
     _paneTree = mapLeaf(_paneTree, paneId, (p) => {
       const tabs = p.tabs.filter((t) => t.id === keepTabId);
- return { ...p, tabs, activeTabId: keepTabId };
+      return { ...p, tabs, activeTabId: keepTabId };
     });
     scheduleSave();
   },
@@ -260,7 +273,7 @@ export const workspaceStore = {
       return {
         ...leaf,
         tabs,
-        activeTabId: activeStillOpen ? leaf.activeTabId : fallbackTab?.id ?? null,
+        activeTabId: activeStillOpen ? leaf.activeTabId : (fallbackTab?.id ?? null),
       };
     }
 
@@ -300,15 +313,13 @@ export const workspaceStore = {
   /** Close all tabs whose path starts with a given prefix (for folder deletion). */
   closeTabsByPathPrefix(prefix: string) {
     function closeInLeaf(leaf: LeafPane): LeafPane {
-      const tabs = leaf.tabs.filter(
-        (t) => t.path !== prefix && !t.path.startsWith(prefix + "/"),
-      );
+      const tabs = leaf.tabs.filter((t) => t.path !== prefix && !t.path.startsWith(prefix + "/"));
       const activeStillOpen = tabs.some((t) => t.id === leaf.activeTabId);
       const fallbackTab = tabs[tabs.length - 1] ?? null;
       return {
         ...leaf,
         tabs,
-        activeTabId: activeStillOpen ? leaf.activeTabId : fallbackTab?.id ?? null,
+        activeTabId: activeStillOpen ? leaf.activeTabId : (fallbackTab?.id ?? null),
       };
     }
 
@@ -352,6 +363,7 @@ export const workspaceStore = {
         SIDEBAR_MAX_WIDTH,
         Math.max(SIDEBAR_MIN_WIDTH, raw.sidebarWidth ?? SIDEBAR_DEFAULT_WIDTH),
       );
+      _focusMode = raw.focusMode ?? false;
       if (raw.paneTree) {
         _paneTree = raw.paneTree;
         const leaves = allLeaves(_paneTree);

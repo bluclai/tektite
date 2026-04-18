@@ -53,14 +53,14 @@
 		}}
 	>
 		<div
-			class="relative w-[400px] max-w-[90vw] rounded-xl border border-outline-variant/20 bg-surface-container shadow-2xl"
+			class="relative w-[400px] max-w-[90vw] rounded-xl bg-surface-container shadow-2xl"
 			role="dialog"
 			aria-modal="true"
 			aria-label="Delete {isDir ? 'folder' : 'file'}"
 			tabindex="-1"
 			onkeydown={(e) => e.key === 'Escape' && close()}
 		>
-			<div class="border-b border-outline-variant/15 px-5 py-4">
+			<div class="px-5 pt-5 pb-2">
 				<h2 class="text-sm font-medium text-on-surface">
 					Delete {isDir ? 'folder' : 'file'}
 				</h2>
@@ -84,7 +84,7 @@
 				{/if}
 			</div>
 
-			<div class="flex items-center justify-end gap-2 border-t border-outline-variant/15 px-5 py-3">
+			<div class="flex items-center justify-end gap-2 px-5 pt-2 pb-4">
 				<button
 					type="button"
 					onclick={close}

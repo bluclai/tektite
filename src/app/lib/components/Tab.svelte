@@ -32,7 +32,7 @@
 			role="tab"
 			aria-selected={active}
 			tabindex={active ? 0 : -1}
-			class="group relative flex w-full min-w-0 cursor-pointer select-none items-center gap-1.5 border-r border-outline-variant/15 px-3 transition-colors duration-150 ease-out
+			class="group relative flex w-full min-w-0 cursor-pointer select-none items-center gap-1.5 px-3 transition-colors duration-200 ease-out
 			{active
 			? 'bg-surface text-on-surface'
 			: 'bg-surface-container-low text-on-surface-variant hover:bg-surface-container hover:text-on-surface'}"

@@ -1,13 +1,14 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
+use tektite_embed::{EmbedProgress, EmbedService, Embedder, FakeEmbedder, OnnxEmbedder, Priority, SemanticHit};
 use tektite_index::{
-    BacklinkRow, FuzzyFileRow, HeadingSearchRow, TagSearchRow, UnresolvedReport,
-    UnresolvedSourceRef,
+    BacklinkRow, FuzzyFileRow, GraphData, GraphEdge, GraphFilters, HeadingSearchRow, TagSearchRow,
+    UnresolvedReport, UnresolvedSourceRef,
 };
 use tektite_search::SearchResult;
 use tektite_vault::watcher::WatcherHandle;
@@ -74,6 +75,78 @@ fn ve(e: VaultError) -> String {
     e.to_string()
 }
 
+/// Resolves the ONNX model resource directory, if available.
+fn resolve_embed_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    use tauri::path::BaseDirectory;
+    app.path()
+        .resolve("resources/embed", BaseDirectory::Resource)
+        .ok()
+}
+
+/// Opens the embed service in background mode with lazy model loading.
+///
+/// Document embeddings are processed on a dedicated worker thread.
+/// The ONNX model is loaded lazily on first embed job (or prewarm).
+/// Progress events are emitted via `embed:progress`.
+///
+/// If the model files aren't present (no `resources/embed` dir) the
+/// embed service is not created and `embed:unavailable` is emitted so
+/// the frontend can hide semantic UI. The app still works — FTS, backlinks,
+/// etc. are unaffected.
+fn build_embed_service(
+    app: &tauri::AppHandle,
+    db_path: &Path,
+) -> Option<EmbedService> {
+    let embed_dir = match resolve_embed_dir(app) {
+        Some(dir) if dir.join("model.onnx").exists() => dir,
+        _ => {
+            eprintln!("ONNX model not found — semantic search disabled");
+            let _ = app.emit("embed:unavailable", ());
+            return None;
+        }
+    };
+
+    // Query embedder — loaded synchronously for search_semantic.
+    let query_embedder: Box<dyn Embedder> = match OnnxEmbedder::from_resource_dir(&embed_dir) {
+        Ok(e) => Box::new(e),
+        Err(e) => {
+            eprintln!("ONNX query embedder failed: {e} — semantic search disabled");
+            let _ = app.emit("embed:unavailable", ());
+            return None;
+        }
+    };
+
+    // Factory for the worker thread's document embedder (lazy load).
+    let factory_dir = embed_dir.clone();
+    let embedder_factory = move || -> Box<dyn Embedder> {
+        match OnnxEmbedder::from_resource_dir(&factory_dir) {
+            Ok(e) => Box::new(e),
+            Err(e) => {
+                // Worker can't load the model — fall back to FakeEmbedder
+                // so the worker thread doesn't panic. Jobs will produce
+                // deterministic but non-semantic vectors; this is a rare
+                // edge case (query embedder loaded fine, worker didn't).
+                eprintln!("ONNX worker embedder failed: {e}");
+                Box::new(FakeEmbedder::new())
+            }
+        }
+    };
+
+    let app_handle = app.clone();
+    let on_progress = move |progress: EmbedProgress| {
+        let _ = app_handle.emit("embed:progress", progress);
+    };
+
+    match EmbedService::open_background(db_path, query_embedder, embedder_factory, on_progress) {
+        Ok(svc) => Some(svc),
+        Err(e) => {
+            eprintln!("embed service unavailable: {e}");
+            let _ = app.emit("embed:unavailable", ());
+            None
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Vault management commands
 // ---------------------------------------------------------------------------
@@ -123,8 +196,17 @@ fn vault_open(
     vault_state: State<VaultState>,
     watcher_state: State<WatcherState>,
 ) -> Result<VaultEntry, String> {
-    // Open the vault and populate the index from disk.
-    let mut vault = Vault::open(&path).map_err(ve)?;
+    // Open the vault (runs Index migrations that create the `chunks`
+    // table) *before* constructing the embed service which needs that
+    // table to exist.
+    let mut vault = Vault::open_without_embed(&path).map_err(ve)?;
+
+    // Now that the Index has run its migrations, build the embed service
+    // in background mode.
+    let db_path = vault.db_path();
+    if let Some(svc) = build_embed_service(&app, &db_path) {
+        vault.set_embed_service(svc);
+    }
     let write_tokens = vault.write_tokens.clone();
     let vault_root = vault.root.clone();
 
@@ -142,6 +224,30 @@ fn vault_open(
     // Scan existing markdown files into the index. mtime-guarded so
     // subsequent opens of the same vault are fast.
     vault.scan_and_index().map_err(ve)?;
+
+    // Schedule background model prewarm ~2s after vault open. The
+    // delay avoids contending with the initial scan_and_index. On an
+    // already-indexed vault (no backlog) this ensures the model is warm
+    // by the time the user searches.
+    //
+    // We need to send the prewarm message *after* the vault is in managed
+    // state, so we capture a clone of the vault Arc and fire from a
+    // detached thread.
+    {
+        let vault_arc = vault_state.0.clone();
+        std::thread::Builder::new()
+            .name("embed-prewarm".into())
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let guard = vault_arc.lock().unwrap();
+                if let Some(vault) = guard.as_ref() {
+                    if let Some(embed) = vault.embed.as_ref() {
+                        embed.prewarm();
+                    }
+                }
+            })
+            .ok(); // fire-and-forget — failure is non-fatal
+    }
 
     // Capture stats before the vault is moved into managed state.
     let maybe_stats = build_stats_payload(&vault);
@@ -223,6 +329,24 @@ fn editor_read_file(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("Failed to open {path}: {e}"))
 }
 
+/// Reads at most `max_bytes` from the start of a file.
+///
+/// Designed for tooltip previews — avoids loading a 100 KB note to show
+/// the first 200 chars. The slice is truncated to a valid UTF-8 boundary
+/// so the returned string is always safe to use.
+#[tauri::command]
+fn preview_get_content(path: String, max_bytes: usize) -> Result<String, String> {
+    use std::io::{BufReader, Read};
+    let file = fs::File::open(&path).map_err(|e| format!("preview_get_content: {e}"))?;
+    let mut reader = BufReader::new(file);
+    let mut buf = vec![0u8; max_bytes];
+    let n = reader
+        .read(&mut buf)
+        .map_err(|e| format!("preview_get_content read: {e}"))?;
+    buf.truncate(n);
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// Writes file content and immediately updates the index.
 ///
 /// Routes through the vault so write-tokens are registered (preventing the
@@ -253,6 +377,8 @@ fn editor_write_file(
             .map_err(|e| format!("Failed to save {rel}: {}", ve(e)))?;
 
         // Immediately re-index so backlinks and link resolution are current.
+        let mut indexed_file_id: Option<String> = None;
+        let mut parsed_for_embed: Option<tektite_parser::ParsedNote> = None;
         if let Some(index) = vault.index.as_mut() {
             let mtime = fs::metadata(&path)
                 .and_then(|m| m.modified())
@@ -261,8 +387,30 @@ fn editor_write_file(
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
             let parsed = tektite_parser::parse(&content);
-            if let Err(e) = index.upsert(&rel, mtime, &parsed) {
-                eprintln!("editor_write_file: inline reindex failed: {e}");
+            match index.upsert(&rel, mtime, &parsed) {
+                Ok(id) => {
+                    indexed_file_id = Some(id);
+                    parsed_for_embed = Some(parsed);
+                }
+                Err(e) => eprintln!("editor_write_file: inline reindex failed: {e}"),
+            }
+        }
+
+        // Queue re-embedding with High priority so it jumps ahead of any
+        // vault-open backlog. In background mode this returns immediately.
+        if let (Some(embed), Some(file_id), Some(parsed)) = (
+            vault.embed.as_ref(),
+            indexed_file_id.as_ref(),
+            parsed_for_embed.as_ref(),
+        ) {
+            let title = embed_title(&rel, parsed);
+            if let Err(e) = embed.reindex_file_with_priority(
+                file_id,
+                &title,
+                parsed,
+                Priority::High,
+            ) {
+                eprintln!("editor_write_file: embed reindex failed: {e}");
             }
         }
 
@@ -623,6 +771,137 @@ fn index_get_backlinks(
     Ok(entries)
 }
 
+// ---------------------------------------------------------------------------
+// Graph view commands (Phase 0 — link edges only)
+// ---------------------------------------------------------------------------
+
+/// Returns the local link-neighborhood around `center_path` up to `depth` hops.
+///
+/// BFS over the `links` table; depth is clamped to `[1, 3]`. Filters are
+/// applied to every visited node except the center. Returns an empty graph
+/// if the center isn't indexed.
+#[tauri::command]
+fn graph_get_neighborhood(
+    center_path: String,
+    depth: Option<u8>,
+    filters: Option<GraphFilters>,
+    vault_state: State<VaultState>,
+) -> Result<GraphData, String> {
+    let guard = vault_state.0.lock().unwrap();
+    let vault = guard.as_ref().ok_or("No vault open")?;
+    let index = vault.index.as_ref().ok_or("Index not available")?;
+
+    let center_id = match index.id_for_path(&center_path).map_err(|e| e.to_string())? {
+        Some(id) => id,
+        None => {
+            return Ok(GraphData {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+            })
+        }
+    };
+
+    let depth = depth.unwrap_or(tektite_index::DEFAULT_DEPTH);
+    let filters = filters.unwrap_or_default();
+
+    index
+        .neighborhood(&center_id, depth, &filters)
+        .map_err(|e| e.to_string())
+}
+
+/// Cosine-similarity threshold for graph semantic edges.
+///
+/// Intentionally lower than the pure-search threshold (~0.7+) because the
+/// graph's spatial context helps users evaluate relevance — they see the
+/// note title and position, not just a snippet.
+const GRAPH_SEMANTIC_THRESHOLD: f32 = 0.65;
+
+/// Returns notes semantically related to `center_path` as graph edges.
+///
+/// Wraps the embed service's `search_related_notes`, applies a cosine
+/// threshold, resolves file paths to `NoteId`s, and returns a
+/// [`GraphData`] whose edges carry `kind = "semantic"` and a similarity
+/// score. The response also includes metadata for every node referenced by
+/// those edges (plus the center itself) so the frontend can render
+/// semantic-only neighbors without a second round trip.
+///
+/// Returns an empty graph if the embed service is unavailable or the
+/// center note has no embeddings yet — never an error, so the frontend
+/// can treat semantic edges as a best-effort enhancement.
+#[tauri::command]
+fn graph_get_semantic_edges(
+    center_path: String,
+    limit: Option<usize>,
+    vault_state: State<VaultState>,
+) -> Result<GraphData, String> {
+    let empty = || GraphData {
+        nodes: Vec::new(),
+        edges: Vec::new(),
+    };
+
+    let guard = vault_state.0.lock().unwrap();
+    let vault = match guard.as_ref() {
+        Some(v) => v,
+        None => return Ok(empty()),
+    };
+    let embed = match vault.embed.as_ref() {
+        Some(e) => e,
+        None => return Ok(empty()),
+    };
+    let index = match vault.index.as_ref() {
+        Some(i) => i,
+        None => return Ok(empty()),
+    };
+
+    let center_id = match index.id_for_path(&center_path).map_err(|e| e.to_string())? {
+        Some(id) => id,
+        None => return Ok(empty()),
+    };
+
+    let limit = limit.unwrap_or(8).min(16);
+    let hits = embed
+        .search_related_notes(&center_id, limit)
+        .map_err(|e| e.to_string())?;
+
+    let mut seen_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut edges: Vec<GraphEdge> = Vec::new();
+    for hit in hits {
+        if hit.score < GRAPH_SEMANTIC_THRESHOLD {
+            continue;
+        }
+        let target_id = match index.id_for_path(&hit.file_path).map_err(|e| e.to_string())? {
+            Some(id) => id,
+            None => continue,
+        };
+        if target_id == center_id {
+            continue;
+        }
+        if !seen_targets.insert(target_id.clone()) {
+            continue;
+        }
+        edges.push(GraphEdge {
+            source: center_id.clone(),
+            target: target_id,
+            kind: "semantic".to_string(),
+            score: Some(hit.score),
+        });
+    }
+
+    let mut ids: std::collections::HashSet<String> = seen_targets;
+    ids.insert(center_id);
+    let node_map = index
+        .graph_node_metadata(&ids)
+        .map_err(|e| e.to_string())?;
+    let mut nodes: Vec<_> = node_map.into_values().collect();
+    nodes.sort_by(|a, b| a.path.cmp(&b.path));
+
+    edges.retain(|e| {
+        nodes.iter().any(|n| n.id == e.source) && nodes.iter().any(|n| n.id == e.target)
+    });
+
+    Ok(GraphData { nodes, edges })
+}
+
 /// Returns grouped unresolved wiki-link targets across the vault.
 #[tauri::command]
 fn index_unresolved_link_report(
@@ -707,6 +986,264 @@ fn search_headings(
         .map_err(|e| e.to_string())
 }
 
+/// Semantic search over the vault's chunk embeddings.
+///
+/// Embeds the query with the active embedder, runs brute-force cosine
+/// similarity against the in-memory cache, and joins back to the `chunks`
+/// table for metadata.
+///
+/// Returns an empty list if no vault is open or the embed service failed
+/// to initialise — never an error, so the frontend can treat semantic
+/// search as a best-effort enhancement over lexical search.
+#[tauri::command]
+fn search_semantic(
+    query: String,
+    limit: Option<usize>,
+    vault_state: State<VaultState>,
+) -> Result<Vec<SemanticHit>, String> {
+    let guard = vault_state.0.lock().unwrap();
+    let vault = match guard.as_ref() {
+        Some(v) => v,
+        None => return Ok(Vec::new()),
+    };
+    let embed = match vault.embed.as_ref() {
+        Some(e) => e,
+        None => return Ok(Vec::new()),
+    };
+    let limit = limit.unwrap_or(20).min(100);
+    embed.search_semantic(&query, limit).map_err(|e| e.to_string())
+}
+
+/// Returns notes semantically related to the given file.
+///
+/// Computes a centroid vector from the file's chunk embeddings, runs
+/// cosine search, and deduplicates by file — one entry per related note.
+/// Returns empty if the embed service is unavailable or the file has no
+/// embeddings yet.
+#[tauri::command]
+fn search_related_notes(
+    file_path: String,
+    limit: Option<usize>,
+    vault_state: State<VaultState>,
+) -> Result<Vec<SemanticHit>, String> {
+    let guard = vault_state.0.lock().unwrap();
+    let vault = match guard.as_ref() {
+        Some(v) => v,
+        None => return Ok(Vec::new()),
+    };
+    let embed = match vault.embed.as_ref() {
+        Some(e) => e,
+        None => return Ok(Vec::new()),
+    };
+    let index = match vault.index.as_ref() {
+        Some(i) => i,
+        None => return Ok(Vec::new()),
+    };
+    let file_id = match index.id_for_path(&file_path).map_err(|e| e.to_string())? {
+        Some(id) => id,
+        None => return Ok(Vec::new()),
+    };
+    let limit = limit.unwrap_or(10).min(50);
+    embed
+        .search_related_notes(&file_id, limit)
+        .map_err(|e| e.to_string())
+}
+
+/// Returns chunks similar to a specific section of a note.
+///
+/// Given a file path and optional heading path, finds the matching chunk
+/// and returns similar chunks across the vault. Chunks from the same
+/// source file are excluded by default.
+#[tauri::command]
+fn search_similar_chunks(
+    file_path: String,
+    heading_path: Option<String>,
+    limit: Option<usize>,
+    vault_state: State<VaultState>,
+) -> Result<Vec<SemanticHit>, String> {
+    let guard = vault_state.0.lock().unwrap();
+    let vault = match guard.as_ref() {
+        Some(v) => v,
+        None => return Ok(Vec::new()),
+    };
+    let embed = match vault.embed.as_ref() {
+        Some(e) => e,
+        None => return Ok(Vec::new()),
+    };
+    let index = match vault.index.as_ref() {
+        Some(i) => i,
+        None => return Ok(Vec::new()),
+    };
+    let file_id = match index.id_for_path(&file_path).map_err(|e| e.to_string())? {
+        Some(id) => id,
+        None => return Ok(Vec::new()),
+    };
+    let limit = limit.unwrap_or(10).min(50);
+    embed
+        .search_similar_chunks(
+            &file_id,
+            heading_path.as_deref(),
+            limit,
+            true, // exclude same file by default
+        )
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Aura — generative continuation (Phase 6)
+// ---------------------------------------------------------------------------
+
+/// Returns a stub continuation for the given cursor position in a file.
+///
+/// Phase-6 scope: returns a canned suggestion so the UI surface, keybindings,
+/// and accept/dismiss flow can be exercised. Real model-backed continuation
+/// will replace this body in a later phase.
+#[tauri::command]
+fn aura_continue(file_path: String, cursor_offset: usize) -> Result<String, String> {
+    let content = fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to open {file_path}: {e}"))?;
+
+    // Take up to ~120 chars of preceding context for a tiny bit of flavour.
+    // The real impl will feed this plus more into the local model.
+    let upto = cursor_offset.min(content.len());
+    let window_start = upto.saturating_sub(120);
+    let prefix = &content[window_start..upto];
+    let trimmed = prefix.trim_end();
+
+    let ends_with_sentence = trimmed
+        .chars()
+        .last()
+        .map(|c| matches!(c, '.' | '!' | '?'))
+        .unwrap_or(true);
+
+    let suggestion = if ends_with_sentence {
+        "The thought unfurls further here — a quiet elaboration the writer might pick up, or sweep aside with a keystroke."
+    } else {
+        "…and the sentence finds its footing, settling into a cadence the writer can either carry forward or dismiss."
+    };
+
+    Ok(suggestion.to_string())
+}
+
+/// Derives the display title used when embedding chunks for this note.
+/// Mirrors `tektite_vault::note_title` but that helper is crate-private.
+fn embed_title(rel_path: &str, note: &tektite_parser::ParsedNote) -> String {
+    if let Some(title) = note.frontmatter.get("title").and_then(|v| v.as_str()) {
+        let trimmed = title.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    PathBuf::from(rel_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(rel_path)
+        .to_string()
+}
+
+/// Returns every distinct tag name in the vault (sorted) for the filter UI.
+#[tauri::command]
+fn index_list_all_tags(vault_state: State<VaultState>) -> Result<Vec<String>, String> {
+    let guard = vault_state.0.lock().unwrap();
+    let vault = guard.as_ref().ok_or("No vault open")?;
+    let index = vault.index.as_ref().ok_or("Index not available")?;
+    index.all_tag_names().map_err(|e| e.to_string())
+}
+
+/// Appends a `[[target]]` wiki-link to the end of `source_path` and reindexes.
+///
+/// Both paths are vault-relative. The target link text is derived from the
+/// target's filename stem (matches the frontend's existing wiki-link style).
+/// A blank line is inserted before the link if the file doesn't already end
+/// with one, so the appended link doesn't fuse into the previous paragraph.
+#[tauri::command]
+fn graph_append_wiki_link(
+    app: tauri::AppHandle,
+    source_path: String,
+    target_path: String,
+    vault_state: State<VaultState>,
+) -> Result<(), String> {
+    let maybe_stats = {
+        let mut guard = vault_state.0.lock().unwrap();
+        let vault = guard.as_mut().ok_or("No vault open")?;
+
+        let existing = vault
+            .read_file(&source_path)
+            .map_err(|e| format!("Failed to read {source_path}: {}", ve(e)))?;
+
+        let stem = std::path::Path::new(&target_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| format!("Invalid target path: {target_path}"))?;
+        let link = format!("[[{stem}]]");
+
+        let mut next = existing;
+        if next.ends_with("\n\n") {
+            next.push_str(&link);
+            next.push('\n');
+        } else if next.ends_with('\n') {
+            next.push('\n');
+            next.push_str(&link);
+            next.push('\n');
+        } else if next.is_empty() {
+            next.push_str(&link);
+            next.push('\n');
+        } else {
+            next.push_str("\n\n");
+            next.push_str(&link);
+            next.push('\n');
+        }
+
+        vault
+            .write_file(&source_path, &next)
+            .map_err(|e| format!("Failed to save {source_path}: {}", ve(e)))?;
+
+        let mut indexed_file_id: Option<String> = None;
+        let mut parsed_for_embed: Option<tektite_parser::ParsedNote> = None;
+        if let Some(index) = vault.index.as_mut() {
+            let abs = vault.root.join(&source_path);
+            let mtime = fs::metadata(&abs)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let parsed = tektite_parser::parse(&next);
+            match index.upsert(&source_path, mtime, &parsed) {
+                Ok(id) => {
+                    indexed_file_id = Some(id);
+                    parsed_for_embed = Some(parsed);
+                }
+                Err(e) => eprintln!("graph_append_wiki_link: reindex failed: {e}"),
+            }
+        }
+
+        if let (Some(embed), Some(file_id), Some(parsed)) = (
+            vault.embed.as_ref(),
+            indexed_file_id.as_ref(),
+            parsed_for_embed.as_ref(),
+        ) {
+            let title = embed_title(&source_path, parsed);
+            if let Err(e) = embed.reindex_file_with_priority(
+                file_id,
+                &title,
+                parsed,
+                Priority::High,
+            ) {
+                eprintln!("graph_append_wiki_link: embed reindex failed: {e}");
+            }
+        }
+
+        build_stats_payload(vault)
+    };
+
+    if let Some(payload) = maybe_stats {
+        let _ = app.emit("index:stats-changed", payload);
+    }
+
+    Ok(())
+}
+
 /// Search tags across the vault.
 #[tauri::command]
 fn search_tags(
@@ -758,6 +1295,42 @@ fn workspace_save(app: tauri::AppHandle, state: serde_json::Value) -> Result<(),
 }
 
 // ---------------------------------------------------------------------------
+// Pinned notes persistence
+// ---------------------------------------------------------------------------
+//
+// Persisted per-vault at `<vault_root>/.tektite/pinned.json`. Contents are
+// opaque JSON owned by the frontend — we just read/write the file.
+
+fn pinned_path(vault_state: &State<VaultState>) -> Result<PathBuf, String> {
+    let guard = vault_state.0.lock().unwrap();
+    let vault = guard.as_ref().ok_or_else(|| "No vault open".to_string())?;
+    Ok(vault.root.join(".tektite").join("pinned.json"))
+}
+
+#[tauri::command]
+fn pinned_load(vault_state: State<VaultState>) -> Result<serde_json::Value, String> {
+    let path = pinned_path(&vault_state)?;
+    if !path.exists() {
+        return Ok(serde_json::json!({ "version": 1, "paths": [] }));
+    }
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn pinned_save(
+    vault_state: State<VaultState>,
+    state: serde_json::Value,
+) -> Result<(), String> {
+    let path = pinned_path(&vault_state)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // App entry point
 // ---------------------------------------------------------------------------
 
@@ -773,6 +1346,7 @@ pub fn run() {
             vault_get_recent,
             vault_open,
             editor_read_file,
+            preview_get_content,
             editor_write_file,
             files_get_tree,
             files_create_file,
@@ -787,12 +1361,22 @@ pub fn run() {
             index_get_backlinks,
             index_unresolved_link_report,
             index_unresolved_target_sources,
+            graph_get_neighborhood,
+            graph_get_semantic_edges,
+            graph_append_wiki_link,
+            index_list_all_tags,
             search_full_text,
             search_fuzzy_files,
             search_headings,
             search_tags,
+            search_semantic,
+            search_related_notes,
+            search_similar_chunks,
             workspace_load,
             workspace_save,
+            pinned_load,
+            pinned_save,
+            aura_continue,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

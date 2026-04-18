@@ -37,31 +37,26 @@ export const clayBaseTheme = EditorView.theme(
       background: surface,
       color: onSurface,
       fontFamily: '"Bitter", Georgia, serif',
-      fontSize: "15px",
-      lineHeight: "1.65",
+      fontSize: "17px",
+      lineHeight: "30px",
     },
-    // Scrollable content area — owns the prose column width.
-    // max-width + auto margins centre the column; overflow-x hidden
-    // prevents any horizontal scroll (lineWrapping handles the rest).
     ".cm-scroller": {
       fontFamily: "inherit",
       lineHeight: "inherit",
       overflowX: "hidden",
     },
-    // Inner content column — constrained to a readable prose width.
-    // The box-sizing trick lets padding be included in the max-width
-    // budget so the text itself stays within ~72ch at 15px.
+    // Prose column — editorial rhythm: 72px top gutter, 128px side gutters,
+    // body capped at 680px for comfortable measure.
     ".cm-content": {
       boxSizing: "border-box",
-      maxWidth: "860px",
+      maxWidth: "936px",
       width: "100%",
       margin: "0 auto",
-      padding: "24px 64px",
+      padding: "72px 128px 128px 128px",
       caretColor: primary,
       wordBreak: "break-word",
-      letterSpacing: "0.012em",
+      letterSpacing: "-0.003em",
     },
-    // Line elements must also not overflow.
     ".cm-line": {
       padding: "0",
     },
@@ -151,34 +146,41 @@ export const clayBaseTheme = EditorView.theme(
 // Syntax highlight style
 // ---------------------------------------------------------------------------
 export const clayHighlightStyle = HighlightStyle.define([
-  // Markdown headings — scale and weight
+  // Markdown headings — Bitter editorial scale
   {
     tag: tags.heading1,
     color: onSurface,
-    fontFamily: '"Inter Variable", "Inter", sans-serif',
-    fontWeight: "600",
-    fontSize: "1.35em",
-    lineHeight: "1.3",
+    fontFamily: '"Bitter", Georgia, serif',
+    fontWeight: "500",
+    fontSize: "46px",
+    lineHeight: "56px",
+    letterSpacing: "-0.022em",
   },
   {
     tag: tags.heading2,
     color: onSurface,
-    fontFamily: '"Inter Variable", "Inter", sans-serif',
-    fontWeight: "600",
-    fontSize: "1.18em",
+    fontFamily: '"Bitter", Georgia, serif',
+    fontWeight: "500",
+    fontSize: "28px",
+    lineHeight: "36px",
+    letterSpacing: "-0.015em",
   },
   {
     tag: tags.heading3,
     color: onSurface,
-    fontFamily: '"Inter Variable", "Inter", sans-serif',
-    fontWeight: "600",
-    fontSize: "1.06em",
+    fontFamily: '"Bitter", Georgia, serif',
+    fontWeight: "500",
+    fontSize: "22px",
+    lineHeight: "30px",
+    letterSpacing: "-0.008em",
   },
   {
     tag: [tags.heading4, tags.heading5, tags.heading6],
     color: onSurface,
-    fontFamily: '"Inter Variable", "Inter", sans-serif',
+    fontFamily: '"Bitter", Georgia, serif',
     fontWeight: "500",
+    fontSize: "19px",
+    lineHeight: "28px",
   },
 
   // Emphasis

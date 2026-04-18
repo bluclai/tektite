@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  collectMarkdownPaths,
-  makeUniqueMarkdownPath,
-  noteTemplates,
-} from "../note-templates";
+import { collectMarkdownPaths, makeUniqueMarkdownPath, noteTemplates } from "../note-templates";
 
 describe("makeUniqueMarkdownPath", () => {
   it("returns the desired path when unused", () => {

@@ -183,7 +183,11 @@ export function renamePathValue(path: string, oldPath: string, newPath: string):
   return path;
 }
 
-export function renamePathsInTree(layout: PaneLayout, oldPath: string, newPath: string): PaneLayout {
+export function renamePathsInTree(
+  layout: PaneLayout,
+  oldPath: string,
+  newPath: string,
+): PaneLayout {
   if (layout.type === "leaf") {
     let changed = false;
     const tabs = layout.tabs.map((tab) => {

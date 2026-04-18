@@ -1,0 +1,30 @@
+[package]
+name = "tektite-embed"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tektite-parser = { path = "../tektite-parser" }
+tektite-index = { path = "../tektite-index" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+bytemuck = "1"
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+ort = { version = "=2.0.0-rc.10", features = ["ndarray", "download-binaries"] }
+ndarray = "0.16"
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+# Exposes in-memory constructors and test hooks outside the `cfg(test)`
+# boundary — used by downstream crates that set up `EmbedService` in their
+# own test harness.
+test-support = []
+# Enables tests that load the real ONNX model from `resources/embed/`.
+# Run with `cargo test -p tektite-embed --features integration`.
+integration = []

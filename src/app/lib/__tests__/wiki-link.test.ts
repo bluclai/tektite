@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { CompletionContext } from "@codemirror/autocomplete";
+
+import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // Hoisted mocks — must survive module re-imports.
 const invokeMock = vi.hoisted(() => vi.fn());
@@ -49,7 +50,13 @@ interface CapturedDispatch {
 }
 
 function makeView(text: string): {
-  view: { state: { doc: { sliceString: (f: number, t: number) => string }; update: (s: unknown) => unknown }; dispatch: (tr: unknown) => void };
+  view: {
+    state: {
+      doc: { sliceString: (f: number, t: number) => string };
+      update: (s: unknown) => unknown;
+    };
+    dispatch: (tr: unknown) => void;
+  };
   captured: CapturedDispatch[];
 } {
   const captured: CapturedDispatch[] = [];

@@ -51,7 +51,7 @@
 	>
 		<!-- Dialog surface -->
 		<div
-			class="w-[400px] max-w-[90vw] rounded-xl border border-outline-variant/20 bg-surface-container shadow-2xl"
+			class="w-[400px] max-w-[90vw] rounded-xl bg-surface-container shadow-2xl"
 			role="dialog"
 			aria-modal="true"
 			aria-label="Ambiguous link"
@@ -59,7 +59,7 @@
 			onkeydown={onKeydown}
 		>
 			<!-- Header -->
-			<div class="border-b border-outline-variant/15 px-5 py-4">
+			<div class="px-5 pt-5 pb-2">
 				<h2 class="text-sm font-medium text-on-surface">Ambiguous link</h2>
 				<p class="mt-0.5 text-xs text-on-surface-variant opacity-50">
 					<span class="font-mono">[[{target}]]</span> matches multiple notes, so Tektite did not guess. Choose one to open:
@@ -81,7 +81,7 @@
 			</div>
 
 			<!-- Footer -->
-			<div class="flex justify-end border-t border-outline-variant/15 px-5 py-3">
+			<div class="flex justify-end px-5 pt-2 pb-4">
 				<button
 					type="button"
 					onclick={close}

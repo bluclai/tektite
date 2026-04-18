@@ -3,6 +3,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { vaultStore } from '$lib/stores/vault.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
+	import PaneHeader from '$lib/components/PaneHeader.svelte';
 	import EmptyPane from '$lib/components/EmptyPane.svelte';
 	import EditorPane from '$lib/components/EditorPane.svelte';
 
@@ -53,18 +54,24 @@
 	class="flex h-full flex-col overflow-hidden"
 	onclick={() => workspaceStore.setActivePane(pane.id)}
 >
-	<TabBar
-		tabs={pane.tabs}
-		activeTabId={pane.activeTabId}
-		paneId={pane.id}
-		{isActive}
-		{onSplitRight}
-		{onSplitDown}
-		onCloseOthers={onCloseOthers}
-		onCloseRight={onCloseRight}
-		onactivate={(id) => workspaceStore.activateTab(pane.id, id)}
-		onclose={(id) => workspaceStore.closeTab(pane.id, id)}
-	/>
+	{#if activeTab}
+		<PaneHeader tab={activeTab} />
+	{/if}
+
+	{#if pane.tabs.length > 1}
+		<TabBar
+			tabs={pane.tabs}
+			activeTabId={pane.activeTabId}
+			paneId={pane.id}
+			{isActive}
+			{onSplitRight}
+			{onSplitDown}
+			onCloseOthers={onCloseOthers}
+			onCloseRight={onCloseRight}
+			onactivate={(id) => workspaceStore.activateTab(pane.id, id)}
+			onclose={(id) => workspaceStore.closeTab(pane.id, id)}
+		/>
+	{/if}
 
 	<div class="flex-1 overflow-hidden">
 		{#if absolutePath === null}

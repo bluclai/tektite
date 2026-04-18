@@ -29,15 +29,26 @@
 
 import type { Completion, CompletionResult } from "@codemirror/autocomplete";
 import type { Extension } from "@codemirror/state";
-import type { DecorationSet } from "@codemirror/view";
+import type { DecorationSet, Tooltip } from "@codemirror/view";
 
+import { filesStore } from "$lib/stores/files.svelte";
 import { autocompletion, CompletionContext } from "@codemirror/autocomplete";
 import { StateField, StateEffect, RangeSetBuilder } from "@codemirror/state";
-import { EditorView, Decoration, ViewPlugin, ViewUpdate, keymap } from "@codemirror/view";
+import {
+  EditorView,
+  Decoration,
+  ViewPlugin,
+  ViewUpdate,
+  keymap,
+  hoverTooltip,
+  showTooltip,
+} from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
-import { filesStore } from "$lib/stores/files.svelte";
-import { parseWikiLinks, rootNotePathForTarget, initialContentForTarget } from "./wiki-link-parse";
+import { marked } from "marked";
+
 import type { WikiLink } from "./wiki-link-parse";
+
+import { parseWikiLinks, rootNotePathForTarget, initialContentForTarget } from "./wiki-link-parse";
 export type { WikiLink } from "./wiki-link-parse";
 
 // ---------------------------------------------------------------------------
@@ -370,7 +381,10 @@ const setLinkHandlers = StateEffect.define<LinkHandlers | null>();
 
 // rootNotePathForTarget and initialContentForTarget are now imported from wiki-link-parse.ts
 
-async function createRootNoteForUnresolvedLink(target: string, handlers: LinkHandlers): Promise<boolean> {
+async function createRootNoteForUnresolvedLink(
+  target: string,
+  handlers: LinkHandlers,
+): Promise<boolean> {
   const relPath = rootNotePathForTarget(target);
   if (!relPath) return false;
 
@@ -510,9 +524,7 @@ export async function wikiLinkCompletionSource(
     .sort((a, b) => a.path.localeCompare(b.path))
     .map((file) => {
       const needsQualifiedInsert = (nameCounts.get(file.name) ?? 0) > 1;
-      const insertTarget = needsQualifiedInsert
-        ? file.path.replace(/\.md$/i, "")
-        : file.name;
+      const insertTarget = needsQualifiedInsert ? file.path.replace(/\.md$/i, "") : file.name;
 
       return {
         label: file.name,
@@ -545,7 +557,9 @@ export async function wikiLinkCompletionSource(
 
 // Color tokens (mirrors theme.ts)
 const primary = "#bdc2ff";
+const onSurface = "#e8e8ea";
 const onSurfaceVariant = "#c9c7cc";
+const outline = "#9391a0";
 const outlineVariant = "#49474e";
 
 export const wikiLinkTheme = EditorView.theme({
@@ -581,14 +595,13 @@ export const wikiLinkTheme = EditorView.theme({
     textDecorationColor: `${primary}60`,
     textUnderlineOffset: "2px",
   },
-  // Target text when unresolved — muted, visually distinct
+  // Target text when unresolved — primary at 50% alpha + dashed underline
   ".cm-wl-unresolved": {
-    color: `${onSurfaceVariant} !important`,
+    color: `color-mix(in srgb, ${primary} 50%, transparent) !important`,
     textDecoration: "underline",
     textDecorationStyle: "dashed",
-    textDecorationColor: `${onSurfaceVariant}80`,
+    textDecorationColor: `color-mix(in srgb, ${primary} 40%, transparent)`,
     textUnderlineOffset: "2px",
-    opacity: "0.9",
   },
   // Target text when ambiguous — warning amber tint
   ".cm-wl-ambiguous": {
@@ -607,7 +620,384 @@ export const wikiLinkTheme = EditorView.theme({
   ".cm-wl-alias": {
     color: onSurfaceVariant,
   },
+  // Peek-on-hover tooltip card
+  ".cm-wl-peek-tooltip": {
+    padding: "10px 14px",
+    maxWidth: "320px",
+    fontFamily: '"Inter Variable", "Inter", sans-serif',
+    lineHeight: "1.5",
+  },
+  ".cm-wl-peek-title": {
+    fontSize: "0.82rem",
+    fontWeight: "600",
+    color: onSurface,
+    marginBottom: "6px",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  // Scrollable markdown body — max-height keeps the card compact
+  ".cm-wl-peek-body": {
+    fontSize: "0.78rem",
+    color: onSurfaceVariant,
+    maxHeight: "180px",
+    overflowY: "auto",
+    wordBreak: "break-word",
+    scrollbarWidth: "thin",
+    scrollbarColor: `${outlineVariant} transparent`,
+  },
+  // Rendered markdown elements inside the body
+  ".cm-wl-peek-body p": { margin: "0 0 4px" },
+  ".cm-wl-peek-body h1, .cm-wl-peek-body h2, .cm-wl-peek-body h3, .cm-wl-peek-body h4": {
+    color: onSurface,
+    fontWeight: "600",
+    margin: "6px 0 3px",
+    fontSize: "0.82rem",
+  },
+  ".cm-wl-peek-body code": {
+    fontFamily: '"JetBrains Mono", monospace',
+    fontSize: "0.74rem",
+    background: `${outlineVariant}30`,
+    borderRadius: "3px",
+    padding: "1px 3px",
+    color: "#c8b4ff",
+  },
+  ".cm-wl-peek-body pre": {
+    background: `${outlineVariant}20`,
+    borderRadius: "4px",
+    padding: "6px 8px",
+    overflowX: "auto",
+    margin: "4px 0",
+  },
+  ".cm-wl-peek-body pre code": {
+    background: "transparent",
+    padding: "0",
+  },
+  ".cm-wl-peek-body strong": { color: onSurface, fontWeight: "600" },
+  ".cm-wl-peek-body em": { fontStyle: "italic" },
+  ".cm-wl-peek-body ul, .cm-wl-peek-body ol": { margin: "2px 0 4px 14px", padding: "0" },
+  ".cm-wl-peek-body li": { margin: "1px 0" },
+  ".cm-wl-peek-body blockquote": {
+    borderLeft: `2px solid ${outlineVariant}`,
+    margin: "4px 0",
+    paddingLeft: "8px",
+    color: outline,
+    fontStyle: "italic",
+  },
+  // Inline link replacement (links are non-interactive in the tooltip)
+  ".cm-wl-peek-link": {
+    color: primary,
+    textDecoration: "underline",
+    textDecorationColor: `${primary}50`,
+    cursor: "default",
+  },
+  // Ambiguous link candidate list
+  ".cm-wl-peek-ambiguous-list": {
+    margin: "4px 0 0 0",
+    padding: "0",
+    listStyle: "none",
+  },
+  ".cm-wl-peek-ambiguous-list li": {
+    fontSize: "0.74rem",
+    color: onSurfaceVariant,
+    padding: "2px 0",
+    fontFamily: '"JetBrains Mono", monospace',
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
 });
+
+// ---------------------------------------------------------------------------
+// Peek preview — Phase 3: performance, cache eviction, keyboard trigger
+// ---------------------------------------------------------------------------
+
+// Configure marked: GFM, no raw HTML passthrough, inert link spans.
+marked.setOptions({ gfm: true });
+const markedRenderer = new marked.Renderer();
+markedRenderer.link = ({ href, title, text }) =>
+  `<span class="cm-wl-peek-link" title="${title ?? href}">${text}</span>`;
+// Suppress image rendering — relative paths don't resolve in the tooltip
+// context. Obsidian embeds (![[...]]) are stripped before reaching marked.
+markedRenderer.image = ({ text }) => (text ? `<em>${text}</em>` : "");
+marked.use({ renderer: markedRenderer });
+
+// ---------------------------------------------------------------------------
+// LRU content cache (max 20 absolute paths)
+// ---------------------------------------------------------------------------
+
+const PEEK_CACHE_MAX = 20;
+const peekCache = new Map<string, string>();
+
+function peekCacheGet(key: string): string | undefined {
+  return peekCache.get(key);
+}
+
+function peekCacheSet(key: string, value: string): void {
+  if (peekCache.size >= PEEK_CACHE_MAX) {
+    peekCache.delete(peekCache.keys().next().value as string);
+  }
+  peekCache.set(key, value);
+}
+
+/**
+ * Evict a single entry by absolute path.
+ * Called from EditorPane when `vault-files-changed` fires so stale previews
+ * are re-fetched on the next hover after a save.
+ */
+export function invalidatePeekCache(absolutePath: string): void {
+  peekCache.delete(absolutePath);
+}
+
+// ---------------------------------------------------------------------------
+// Content helpers
+// ---------------------------------------------------------------------------
+
+/** Strip YAML frontmatter (`---\n...\n---`) from the start of a file. */
+function stripFrontmatter(text: string): string {
+  if (!text.startsWith("---")) return text;
+  const end = text.indexOf("\n---", 3);
+  if (end === -1) return text;
+  return text.slice(end + 4).trimStart();
+}
+
+/** Remove Obsidian-style embed syntax `![[...]]` so they don't render as broken images. */
+function stripObsidianEmbeds(text: string): string {
+  return text.replace(/!\[\[[^\]]*\]\]/g, "");
+}
+
+/** Extract optional H1 title from the start of stripped content. */
+function extractTitle(stripped: string): { title: string | null; rest: string } {
+  if (stripped.startsWith("# ")) {
+    const nl = stripped.indexOf("\n");
+    const title = stripped.slice(2, nl === -1 ? undefined : nl).trim();
+    const rest = nl === -1 ? "" : stripped.slice(nl + 1).trimStart();
+    return { title, rest };
+  }
+  return { title: null, rest: stripped };
+}
+
+/**
+ * Client-side heading scan for fragment preview.
+ * Returns the line index of the first heading whose text matches `fragment`
+ * (case-insensitive), or -1 if not found.
+ */
+function findHeadingLine(lines: string[], fragment: string): number {
+  const target = fragment.toLowerCase().trim();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimStart();
+    if (line.startsWith("#")) {
+      const text = line
+        .replace(/^#+\s*/, "")
+        .trim()
+        .toLowerCase();
+      if (text === target) return i;
+    }
+  }
+  return -1;
+}
+
+/** Slice up to 500 chars of content, starting at the matching heading if present. */
+function slicePreviewContent(stripped: string, fragment: string | null): string {
+  if (!fragment) return stripped.slice(0, 500);
+  const lines = stripped.split("\n");
+  const idx = findHeadingLine(lines, fragment);
+  if (idx === -1) return stripped.slice(0, 500);
+  return lines.slice(idx).join("\n").slice(0, 500);
+}
+
+function renderMarkdown(md: string): string {
+  return marked.parse(stripObsidianEmbeds(md), { async: false }) as string;
+}
+
+// ---------------------------------------------------------------------------
+// Tooltip DOM builders
+// ---------------------------------------------------------------------------
+
+function buildResolvedTooltipDom(raw: string, fragment: string | null): HTMLElement {
+  const stripped = stripFrontmatter(raw);
+  const { title, rest } = extractTitle(stripped);
+  const html = renderMarkdown(slicePreviewContent(rest, fragment));
+
+  const dom = document.createElement("div");
+  dom.className = "cm-wl-peek-tooltip";
+
+  if (title) {
+    const h = document.createElement("div");
+    h.className = "cm-wl-peek-title";
+    h.textContent = title;
+    dom.appendChild(h);
+  }
+
+  const body = document.createElement("div");
+  body.className = "cm-wl-peek-body";
+  if (html.trim()) {
+    body.innerHTML = html;
+  } else {
+    body.textContent = "(empty note)";
+  }
+  dom.appendChild(body);
+  return dom;
+}
+
+function buildAmbiguousTooltipDom(target: string, paths: string[]): HTMLElement {
+  const dom = document.createElement("div");
+  dom.className = "cm-wl-peek-tooltip";
+
+  const h = document.createElement("div");
+  h.className = "cm-wl-peek-title";
+  h.textContent = `Multiple matches for "${target}"`;
+  dom.appendChild(h);
+
+  const list = document.createElement("ul");
+  list.className = "cm-wl-peek-ambiguous-list";
+  for (const p of paths) {
+    const li = document.createElement("li");
+    li.textContent = p;
+    list.appendChild(li);
+  }
+  dom.appendChild(list);
+  return dom;
+}
+
+// ---------------------------------------------------------------------------
+// Core async peek builder — shared by hover and keyboard trigger
+// ---------------------------------------------------------------------------
+
+// 4 KB is enough for ~500 chars of markdown after stripping frontmatter.
+const PREVIEW_MAX_BYTES = 4096;
+
+async function buildPeekTooltip(view: EditorView, pos: number): Promise<Tooltip | null> {
+  const link = wikiLinkAt(view.state, pos);
+  if (!link) return null;
+
+  const resolutions = view.state.field(resolutionField);
+  const resolution = resolutions.get(`${link.from}:${link.to}`);
+  if (!resolution) return null;
+
+  if (resolution.kind === "ambiguous") {
+    return {
+      pos: link.from,
+      end: link.to,
+      above: true,
+      create() {
+        return { dom: buildAmbiguousTooltipDom(link.target, resolution.paths) };
+      },
+    };
+  }
+
+  if (resolution.kind !== "resolved") return null;
+
+  const handlers = view.state.field(linkHandlersField);
+  if (!handlers) return null;
+
+  const absolutePath = `${handlers.vaultRoot}/${resolution.path}`;
+
+  let raw = peekCacheGet(absolutePath);
+  if (raw === undefined) {
+    try {
+      raw = await invoke<string>("preview_get_content", {
+        path: absolutePath,
+        maxBytes: PREVIEW_MAX_BYTES,
+      });
+      peekCacheSet(absolutePath, raw);
+    } catch {
+      return null;
+    }
+  }
+
+  const fragment = link.fragment;
+  return {
+    pos: link.from,
+    end: link.to,
+    above: true,
+    create() {
+      return { dom: buildResolvedTooltipDom(raw as string, fragment) };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard-triggered tooltip (Ctrl+F10)
+// ---------------------------------------------------------------------------
+
+const setPeekKeyboardTooltip = StateEffect.define<Tooltip | null>();
+
+/**
+ * State field that holds the keyboard-triggered peek tooltip.
+ * Provides its value to the CM6 `showTooltip` facet so the tooltip renders
+ * through the same infrastructure as autocomplete / lint tooltips.
+ * Dismissed automatically when the cursor moves outside the link range or
+ * the document changes.
+ */
+const peekKeyboardField = StateField.define<Tooltip | null>({
+  create: () => null,
+  update(val, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setPeekKeyboardTooltip)) return e.value;
+    }
+    if (val === null) return null;
+    if (tr.docChanged) return null;
+    // Dismiss when cursor leaves the link range.
+    if (tr.selection) {
+      const head = tr.newSelection.main.head;
+      if (head < val.pos || (val.end !== undefined && head > val.end)) return null;
+    }
+    return val;
+  },
+  provide: (f) => showTooltip.from(f),
+});
+
+async function triggerKeyboardPeek(view: EditorView): Promise<void> {
+  // Toggle off if a keyboard tooltip is already showing.
+  if (view.state.field(peekKeyboardField) !== null) {
+    view.dispatch({ effects: setPeekKeyboardTooltip.of(null) });
+    return;
+  }
+
+  const { head } = view.state.selection.main;
+  const tooltip = await buildPeekTooltip(view, head);
+  if (tooltip && view.dom.isConnected) {
+    view.dispatch({ effects: setPeekKeyboardTooltip.of(tooltip) });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public extension factory
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the wiki-link hover-preview extension (Phase 3).
+ *
+ * Mouse: 300 ms hover over any resolved/ambiguous wiki-link shows a peek card.
+ * Keyboard: Ctrl+F10 with cursor inside a link shows/dismisses the same card.
+ * Cache: LRU of 20 entries; evict via `invalidatePeekCache`.
+ * Performance: uses `preview_get_content` (partial read, 4 KB max) instead of
+ *   reading the whole file.
+ */
+export function wikiLinkHoverPreview(): Extension {
+  return [
+    peekKeyboardField,
+    hoverTooltip(buildPeekTooltip, { hoverTime: 300 }),
+    keymap.of([
+      {
+        key: "Ctrl-F10",
+        run(view) {
+          void triggerKeyboardPeek(view);
+          return true;
+        },
+      },
+      {
+        key: "Escape",
+        run(view) {
+          if (view.state.field(peekKeyboardField) === null) return false;
+          view.dispatch({ effects: setPeekKeyboardTooltip.of(null) });
+          return true;
+        },
+      },
+    ]),
+  ];
+}
 
 // ---------------------------------------------------------------------------
 // Public factory functions
@@ -627,6 +1017,7 @@ export function wikiLinkExtension(handlers: LinkHandlers): Extension {
     clickHandler,
     pointerCursorTheme,
     wikiLinkTheme,
+    wikiLinkHoverPreview(),
     keymap.of([
       {
         key: "Alt-Enter",

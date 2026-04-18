@@ -1,6 +1,7 @@
 import { filesStore } from "$lib/stores/files.svelte";
 import { indexStatsStore } from "$lib/stores/indexStats.svelte";
 import { operationStore } from "$lib/stores/operationStore.svelte";
+import { pinnedStore } from "$lib/stores/pinned-notes.svelte";
 import { invoke } from "@tauri-apps/api/core";
 
 export interface VaultEntry {
@@ -45,6 +46,9 @@ export async function openVault(vaultPath: string): Promise<void> {
 
     // Subscribe to transient operation signals (embed progress, agent runs).
     await operationStore.start();
+
+    // Load pinned notes for this vault.
+    await pinnedStore.load();
   } catch (error) {
     _openError = error instanceof Error ? error.message : String(error);
     throw error;

@@ -45,7 +45,7 @@
 	Tab bar: 36px tall. Active pane gets a subtle primary accent on the bottom edge.
 -->
 <div
-	class="relative flex h-9 shrink-0 overflow-hidden bg-surface-container-low transition-colors duration-150"
+	class="relative flex h-9 shrink-0 overflow-hidden bg-surface-container-low transition-colors duration-200 ease-out"
 >
 	<!-- Active pane bottom accent -->
 	{#if isActive}

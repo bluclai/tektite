@@ -95,7 +95,7 @@
 		<div
 			role="separator"
 			aria-orientation={layout.direction === 'horizontal' ? 'vertical' : 'horizontal'}
-			class="group relative z-10 shrink-0 transition-colors duration-150
+			class="group relative z-10 shrink-0 transition-colors duration-200 ease-out
 				{layout.direction === 'horizontal' ? 'w-[4px] cursor-col-resize' : 'h-[4px] cursor-row-resize'}
 				bg-outline-variant/20 hover:bg-primary/40
 				{dragging ? 'bg-primary/50' : ''}"

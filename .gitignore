@@ -13,3 +13,5 @@ vite.config.ts.timestamp-*
 plans
 docs
 skills-lock.json
+src-tauri/resources/embed/*.onnx
+src-tauri/resources/embed/tokenizer.json
