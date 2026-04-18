@@ -1,19 +1,21 @@
 <script lang="ts">
+    import { ChevronDown, Search, Settings } from 'lucide-svelte';
     import { workspaceStore, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH } from '$lib/stores/workspace.svelte';
+    import { vaultStore } from '$lib/stores/vault.svelte';
+    import { indexStatsStore } from '$lib/stores/indexStats.svelte';
     import FileExplorer from '$lib/components/FileExplorer.svelte';
     import SearchPanel from '$lib/components/SearchPanel.svelte';
     import BacklinksPanel from '$lib/components/BacklinksPanel.svelte';
     import UnresolvedLinksPanel from '$lib/components/UnresolvedLinksPanel.svelte';
     import GraphPanel from '$lib/components/GraphPanel.svelte';
+    import VaultPopover from '$lib/components/VaultPopover.svelte';
+    import * as Popover from '$lib/components/ui/popover/index';
 
-    const panelLabels: Record<string, string> = {
-        files: 'Files',
-        search: 'Search',
-        backlinks: 'Backlinks',
-        unresolved: 'Unresolved Links',
-        graph: 'Graph',
-        settings: 'Settings',
-    };
+    interface Props {
+        onopenPalette?: () => void;
+    }
+
+    let { onopenPalette }: Props = $props();
 
     // Sidebar element — used to write --sidebar-width directly during drag
     let sidebarEl = $state<HTMLElement | null>(null);
@@ -22,6 +24,8 @@
     let dragging = false;
     let dragStartX = 0;
     let dragStartWidth = 0;
+
+    let vaultPopoverOpen = $state(false);
 
     function clamp(value: number, min: number, max: number) {
         return Math.min(max, Math.max(min, value));
@@ -33,7 +37,6 @@
         dragStartX = e.clientX;
         dragStartWidth = workspaceStore.sidebarWidth;
 
-        // Disable transition during drag for 60fps feel
         sidebarEl?.style.setProperty('transition', 'none');
 
         window.addEventListener('mousemove', onMousemove);
@@ -44,7 +47,6 @@
         if (!dragging) return;
         const delta = e.clientX - dragStartX;
         const newWidth = clamp(dragStartWidth + delta, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
-        // Direct DOM mutation — no Svelte reactivity during drag
         sidebarEl?.style.setProperty('--sidebar-width', `${newWidth}px`);
         workspaceStore.setSidebarWidthImmediate(newWidth);
     }
@@ -59,30 +61,75 @@
         const newWidth = clamp(dragStartWidth + delta, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
         workspaceStore.commitSidebarWidth(newWidth);
 
-        // Re-enable transition after drag ends
         sidebarEl?.style.removeProperty('transition');
+    }
+
+    function openSettings() {
+        workspaceStore.setActivePanel('settings');
+        if (!workspaceStore.sidebarOpen) workspaceStore.openSidebar();
     }
 </script>
 
-<!--
-    The sidebar uses a CSS custom property (--sidebar-width) for its width so the
-    drag handler can update it via direct DOM mutation for 60fps performance.
-    The ::after pseudo-element on the resize handle also needs a <style> block.
-    Everything else uses Tailwind.
--->
 <aside
     bind:this={sidebarEl}
-    class="sidebar relative flex shrink-0 flex-row overflow-hidden transition-[width] duration-150 ease-out"
+    class="sidebar relative flex shrink-0 flex-row overflow-hidden transition-[width] duration-200 ease-out"
     class:sidebar--closed={!workspaceStore.sidebarOpen}
     style="--sidebar-width: {workspaceStore.sidebarWidth}px"
 >
-    <!-- Inner panel — fixed at stored width so content doesn't reflow on close -->
-    <div class="sidebar-inner flex h-full shrink-0 flex-col overflow-hidden bg-surface-container-low">
-        <!-- Panel header -->
-        <div class="flex h-9 shrink-0 items-center px-4">
-            <span class="text-xs font-medium tracking-wide text-on-surface-variant opacity-60 uppercase">
-                {panelLabels[workspaceStore.activePanel] ?? workspaceStore.activePanel}
-            </span>
+    <div class="sidebar-inner flex h-full shrink-0 flex-col overflow-hidden bg-surface-abyss">
+        <!-- Workspace header -->
+        <Popover.Root bind:open={vaultPopoverOpen}>
+            <Popover.Trigger>
+                {#snippet child({ props })}
+                    <button
+                        {...props}
+                        class="group flex h-[54px] shrink-0 cursor-pointer items-center gap-2.5 border-none bg-transparent px-4 text-left transition-colors duration-200 ease-out hover:bg-[rgba(255,255,255,0.02)]"
+                        aria-label="Switch vault"
+                    >
+                        <span
+                            class="block h-[22px] w-[22px] shrink-0 rounded-[6px]"
+                            style="background: linear-gradient(135deg, #BDC2FF 0%, #8188D8 100%); box-shadow: 0 0 12px rgba(189,194,255,0.18);"
+                            aria-hidden="true"
+                        ></span>
+                        <div class="flex min-w-0 flex-1 flex-col leading-tight">
+                            <span class="truncate font-sans text-[13px] font-semibold text-text-primary">
+                                {vaultStore.name || 'Vault'}
+                            </span>
+                            <span class="truncate font-sans text-[11px] text-text-muted">
+                                Personal · {indexStatsStore.noteCount} notes
+                            </span>
+                        </div>
+                        <ChevronDown
+                            size={14}
+                            strokeWidth={1.75}
+                            class="shrink-0 text-text-ghost transition-colors duration-200 group-hover:text-text-muted"
+                            aria-hidden="true"
+                        />
+                    </button>
+                {/snippet}
+            </Popover.Trigger>
+            <Popover.Content
+                side="bottom"
+                align="start"
+                sideOffset={6}
+                class="p-0 w-auto rounded-lg border-none shadow-2xl"
+            >
+                <VaultPopover onclose={() => (vaultPopoverOpen = false)} />
+            </Popover.Content>
+        </Popover.Root>
+
+        <!-- Quick search -->
+        <div class="px-3 pb-2">
+            <button
+                class="flex h-[34px] w-full cursor-pointer items-center gap-2 rounded-[8px] border-none px-2.5 text-left transition-colors duration-200 ease-out hover:brightness-110"
+                style="background-color: #131316;"
+                onclick={() => onopenPalette?.()}
+                aria-label="Quick search"
+            >
+                <Search size={13} strokeWidth={1.75} class="shrink-0 text-text-muted" aria-hidden="true" />
+                <span class="flex-1 truncate font-sans text-[12px] text-text-muted">Quick search</span>
+                <span class="kbd">⌘K</span>
+            </button>
         </div>
 
         <!-- Panel content -->
@@ -98,11 +145,30 @@
             {:else if workspaceStore.activePanel === 'graph'}
                 <GraphPanel />
             {:else}
-                <!-- Placeholder for Settings (future phases) -->
                 <div class="flex h-full items-center justify-center">
-                    <p class="text-xs text-on-surface-variant opacity-30">Coming soon</p>
+                    <p class="font-sans text-[11px] text-text-ghost">Coming soon</p>
                 </div>
             {/if}
+        </div>
+
+        <!-- Footer -->
+        <div class="flex h-9 shrink-0 items-center gap-2 px-4">
+            <span
+                class="block h-[6px] w-[6px] rounded-full"
+                style="background-color: #7AD396; box-shadow: 0 0 6px rgba(122,211,150,0.5);"
+                aria-hidden="true"
+            ></span>
+            <span class="flex-1 truncate font-sans text-[11px] text-text-muted">
+                Synced · just now
+            </span>
+            <button
+                class="flex h-6 w-6 cursor-pointer items-center justify-center rounded border-none bg-transparent text-text-ghost transition-colors duration-200 ease-out hover:text-text-secondary"
+                onclick={openSettings}
+                aria-label="Settings"
+                title="Settings"
+            >
+                <Settings size={13} strokeWidth={1.75} />
+            </button>
         </div>
     </div>
 
@@ -118,7 +184,6 @@
 </aside>
 
 <style>
-    /* Width driven by CSS custom property for direct DOM mutation during drag */
     .sidebar {
         width: var(--sidebar-width, 240px);
     }
@@ -127,27 +192,24 @@
         width: 0 !important;
     }
 
-    /* Inner content stays at full stored width so it doesn't reflow on close */
     .sidebar-inner {
         width: var(--sidebar-width, 240px);
         min-width: var(--sidebar-width, 240px);
-        border-right: 1px solid color-mix(in srgb, var(--color-outline-variant) 20%, transparent);
     }
 
-    /* 4px visible indicator centred in the 12px hit zone */
     .resize-handle::after {
         content: '';
         position: absolute;
         top: 0;
         right: 0;
-        width: 4px;
+        width: 2px;
         height: 100%;
-        background-color: color-mix(in srgb, var(--color-outline-variant) 20%, transparent);
+        background-color: transparent;
         transition: background-color 150ms ease-out;
     }
 
     .resize-handle:hover::after,
     .resize-handle:active::after {
-        background-color: var(--color-primary);
+        background-color: color-mix(in srgb, var(--color-primary) 50%, transparent);
     }
 </style>
