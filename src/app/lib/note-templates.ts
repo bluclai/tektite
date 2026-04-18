@@ -14,18 +14,23 @@ function pad(value: number): string {
 }
 
 function slugFromTitle(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "note";
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "note"
+  );
 }
 
 function flattenExistingPaths(existingPaths?: Iterable<string>): Set<string> {
   return new Set(existingPaths ?? []);
 }
 
-export function makeUniqueMarkdownPath(desiredPath: string, existingPaths?: Iterable<string>): string {
+export function makeUniqueMarkdownPath(
+  desiredPath: string,
+  existingPaths?: Iterable<string>,
+): string {
   const existing = flattenExistingPaths(existingPaths);
   if (!existing.has(desiredPath)) {
     return desiredPath;
@@ -50,7 +55,9 @@ export function collectMarkdownPaths(
 ): string[] {
   const results: string[] = [];
 
-  function visit(nodes: Array<{ path: string; is_dir: boolean; is_markdown: boolean; children?: unknown[] }>) {
+  function visit(
+    nodes: Array<{ path: string; is_dir: boolean; is_markdown: boolean; children?: unknown[] }>,
+  ) {
     for (const node of nodes) {
       if (node.is_dir) {
         visit(Array.isArray(node.children) ? (node.children as typeof nodes) : []);

@@ -84,12 +84,9 @@ export const indexStatsStore = {
       _unlistenFn = null;
     }
 
-    _unlistenFn = await listen<IndexStatsPayload>(
-      "index:stats-changed",
-      ({ payload }) => {
-        applyPayload(payload);
-      },
-    );
+    _unlistenFn = await listen<IndexStatsPayload>("index:stats-changed", ({ payload }) => {
+      applyPayload(payload);
+    });
 
     // Fetch initial values — the push event may arrive before the listener is
     // registered if vault_open emits synchronously, so we always fetch once.

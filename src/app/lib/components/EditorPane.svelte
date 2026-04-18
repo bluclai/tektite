@@ -364,7 +364,7 @@
             .replace(/```[\s\S]*?```/g, '')
             .replace(/`[^`]*`/g, '')
             .replace(/\[\[([^\]]+)\]\]/g, '$1')
-            .replace(/[#>*_`~\-]/g, ' ');
+            .replace(/[#>*_`~-]/g, ' ');
         const words = stripped.match(/\b[\p{L}\p{N}][\p{L}\p{N}'-]*\b/gu);
         return words ? words.length : 0;
     }

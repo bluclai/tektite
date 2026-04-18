@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+
 import {
   type PaneTab,
   type LeafPane,
@@ -206,7 +207,7 @@ export const workspaceStore = {
   closeOtherTabs(paneId: string, keepTabId: string) {
     _paneTree = mapLeaf(_paneTree, paneId, (p) => {
       const tabs = p.tabs.filter((t) => t.id === keepTabId);
- return { ...p, tabs, activeTabId: keepTabId };
+      return { ...p, tabs, activeTabId: keepTabId };
     });
     scheduleSave();
   },
@@ -272,7 +273,7 @@ export const workspaceStore = {
       return {
         ...leaf,
         tabs,
-        activeTabId: activeStillOpen ? leaf.activeTabId : fallbackTab?.id ?? null,
+        activeTabId: activeStillOpen ? leaf.activeTabId : (fallbackTab?.id ?? null),
       };
     }
 
@@ -312,15 +313,13 @@ export const workspaceStore = {
   /** Close all tabs whose path starts with a given prefix (for folder deletion). */
   closeTabsByPathPrefix(prefix: string) {
     function closeInLeaf(leaf: LeafPane): LeafPane {
-      const tabs = leaf.tabs.filter(
-        (t) => t.path !== prefix && !t.path.startsWith(prefix + "/"),
-      );
+      const tabs = leaf.tabs.filter((t) => t.path !== prefix && !t.path.startsWith(prefix + "/"));
       const activeStillOpen = tabs.some((t) => t.id === leaf.activeTabId);
       const fallbackTab = tabs[tabs.length - 1] ?? null;
       return {
         ...leaf,
         tabs,
-        activeTabId: activeStillOpen ? leaf.activeTabId : fallbackTab?.id ?? null,
+        activeTabId: activeStillOpen ? leaf.activeTabId : (fallbackTab?.id ?? null),
       };
     }
 
