@@ -116,6 +116,17 @@ impl Store {
         Ok(out)
     }
 
+    /// True when at least one chunk exists for the given file. Cheaper
+    /// than [`chunks_for_file`] because it never materialises vectors —
+    /// intended for the vault-open scan's "does this already-indexed
+    /// file need embedding?" check.
+    pub fn has_chunks_for_file(&self, file_id: &str) -> Result<bool, EmbedError> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT 1 FROM chunks WHERE file_id = ?1 LIMIT 1")?;
+        Ok(stmt.exists(params![file_id])?)
+    }
+
     /// Returns the existing chunks for one file, ordered by `chunk_index`.
     /// Used by [`EmbedService::reindex_file`] to decide which chunks can
     /// skip re-embedding.

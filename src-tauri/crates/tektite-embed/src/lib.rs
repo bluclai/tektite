@@ -168,6 +168,14 @@ impl EmbedService {
         self.reindex_file_with_priority(file_id, title, note, Priority::Normal)
     }
 
+    /// True when the file already has at least one stored chunk. Used by
+    /// the vault-open scan to recognise already-indexed files that were
+    /// never embedded (pre-semantic-index installs) so they can be
+    /// backfilled without the usual mtime short-circuit.
+    pub fn has_chunks_for_file(&self, file_id: &str) -> Result<bool, EmbedError> {
+        self.store.has_chunks_for_file(file_id)
+    }
+
     /// Like [`reindex_file`](Self::reindex_file) but with an explicit
     /// priority. Use [`Priority::High`] for live edits so they jump ahead
     /// of vault-open backlog items.
