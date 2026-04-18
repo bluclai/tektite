@@ -584,14 +584,13 @@ export const wikiLinkTheme = EditorView.theme({
     textDecorationColor: `${primary}60`,
     textUnderlineOffset: "2px",
   },
-  // Target text when unresolved — muted, visually distinct
+  // Target text when unresolved — primary at 50% alpha + dashed underline
   ".cm-wl-unresolved": {
-    color: `${onSurfaceVariant} !important`,
+    color: `color-mix(in srgb, ${primary} 50%, transparent) !important`,
     textDecoration: "underline",
     textDecorationStyle: "dashed",
-    textDecorationColor: `${onSurfaceVariant}80`,
+    textDecorationColor: `color-mix(in srgb, ${primary} 40%, transparent)`,
     textUnderlineOffset: "2px",
-    opacity: "0.9",
   },
   // Target text when ambiguous — warning amber tint
   ".cm-wl-ambiguous": {
