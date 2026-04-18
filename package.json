@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "oxlint --import-plugin .",
+    "lint:fix": "oxlint --fix",
     "format": "oxfmt src",
     "postinstall": "lefthook install"
   },
