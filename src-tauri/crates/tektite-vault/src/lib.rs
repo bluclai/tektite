@@ -309,12 +309,29 @@ impl Vault {
 
             let mtime = file_mtime(abs);
 
-            // Skip if already indexed with the same mtime.
+            // Skip if already indexed with the same mtime — unless the
+            // embed service is attached and the file has no chunks yet.
+            // That case covers vaults opened before the semantic index
+            // existed: the file is in the index but was never chunked,
+            // so a naive mtime skip would permanently starve the embed
+            // backlog.
             let already_current = index
                 .get_mtime(&rel)
                 .is_ok_and(|stored| stored == Some(mtime));
             if already_current {
-                continue;
+                let needs_embed_backfill = match self.embed.as_ref() {
+                    Some(embed) => match index.id_for_path(&rel) {
+                        Ok(Some(file_id)) => embed
+                            .has_chunks_for_file(&file_id)
+                            .map(|has| !has)
+                            .unwrap_or(false),
+                        _ => false,
+                    },
+                    None => false,
+                };
+                if !needs_embed_backfill {
+                    continue;
+                }
             }
 
             let content = match std::fs::read_to_string(abs) {

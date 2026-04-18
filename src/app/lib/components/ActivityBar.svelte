@@ -3,6 +3,7 @@
         Files,
         Search,
         Network,
+        Link2,
         Unlink,
         Share2,
         Settings,
@@ -24,6 +25,7 @@
         { id: 'search', icon: Search, label: 'Search' },
         { id: 'graph', icon: Share2, label: 'Graph' },
         { id: 'backlinks', icon: Network, label: 'Backlinks' },
+        { id: 'related', icon: Link2, label: 'Related' },
         { id: 'unresolved', icon: Unlink, label: 'Unresolved Links' },
     ];
 

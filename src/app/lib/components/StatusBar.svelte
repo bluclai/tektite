@@ -2,8 +2,8 @@
     StatusBar — editorial rewrite (Phase 5).
 
     Left:  {words} words · {reading} min read · Line {L}, Col {C}
-    Mid:   transient operation state (embedding, agent running) — when present
-    Right: Markdown · UTF-8 · Focus (Focus toggles .editor--focus)
+    Mid:   transient operation state (agent running) — when present
+    Right: [semantic index status] · [save state] · Markdown · UTF-8 · Focus
 
     Mid-dot separators in --color-text-faint, no dividers.
 -->
@@ -12,8 +12,17 @@
     import { workspaceStore } from '$lib/stores/workspace.svelte';
     import { vaultStore } from '$lib/stores/vault.svelte';
     import { operationStore } from '$lib/stores/operationStore.svelte';
+    import { embedStatusStore } from '$lib/stores/embedStatus.svelte';
 
     const fmt = new Intl.NumberFormat();
+
+    const embedLabel = $derived.by(() => {
+        if (!embedStatusStore.available) return 'Semantic search unavailable';
+        if (embedStatusStore.inProgress) {
+            return `Indexing ${fmt.format(embedStatusStore.done)}/${fmt.format(embedStatusStore.total)}`;
+        }
+        return null;
+    });
 
     const hasActiveFile = $derived(
         vaultStore.path !== null && workspaceStore.activeFilePath !== null,
@@ -51,17 +60,20 @@
                 <span>agent running</span>
             </span>
         </div>
-    {:else if operationStore.isEmbedding}
-        <div class="ml-3 flex items-center gap-1.5">
-            <span style="color: var(--color-text-faint);">·</span>
-            <span title="Building semantic index">
-                embedding {fmt.format(operationStore.embedDone)} / {fmt.format(operationStore.embedTotal)}
-            </span>
-        </div>
     {/if}
 
-    <!-- RIGHT: format + encoding + focus -->
+    <!-- RIGHT: semantic index status · format + encoding + focus -->
     <div class="ml-auto flex items-center gap-1.5">
+        {#if embedLabel}
+            <span
+                title={embedStatusStore.available
+                    ? 'Building semantic index'
+                    : 'The embedding model failed to load — semantic search is disabled for this session.'}
+            >
+                {embedLabel}
+            </span>
+            <span style="color: var(--color-text-faint);">·</span>
+        {/if}
         {#if saveLabel}
             <span
                 style="color: {editorStore.saveState === 'error' ? 'var(--color-destructive)' : 'var(--color-text-secondary)'};"

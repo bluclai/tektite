@@ -9,7 +9,7 @@ use crate::IndexError;
 use rusqlite::Connection;
 
 /// Latest schema version. Bump whenever a new migration is added.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Ordered migrations applied above the current stored version.
 ///
@@ -23,6 +23,8 @@ fn migrations() -> &'static [(i64, &'static str)] {
         (1, V1_SCHEMA_SQL),
         // v2 — semantic chunks table for tektite-embed.
         (2, V2_CHUNKS_SQL),
+        // v3 — semantic navigation: heading_text + heading_level on chunks.
+        (3, V3_CHUNKS_HEADING_SQL),
     ]
 }
 
@@ -199,3 +201,96 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(content_hash);
 ";
+
+/// v2 → v3 — adds `heading_text` and `heading_level` to `chunks`.
+///
+/// Both columns are nullable; existing rows are left with NULLs and the
+/// chunker backfills them on the next re-embed of each file (driven by
+/// content-hash invalidation, so the backfill is cheap — no forced rebuild).
+const V3_CHUNKS_HEADING_SQL: &str = "
+ALTER TABLE chunks ADD COLUMN heading_text TEXT;
+ALTER TABLE chunks ADD COLUMN heading_level INTEGER;
+";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn column_names(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    }
+
+    #[test]
+    fn fresh_db_migrates_to_latest() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&mut conn).unwrap();
+        assert_eq!(read_version(&conn), Some(SCHEMA_VERSION));
+        let cols = column_names(&conn, "chunks");
+        assert!(cols.contains(&"heading_text".to_string()));
+        assert!(cols.contains(&"heading_level".to_string()));
+    }
+
+    #[test]
+    fn upgrade_from_v2_preserves_rows_and_adds_columns() {
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        // Bring the DB to exactly v2 by running migrations 1..=2 manually.
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )
+        .unwrap();
+        conn.execute_batch(V1_SCHEMA_SQL).unwrap();
+        conn.execute_batch(V2_CHUNKS_SQL).unwrap();
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', '2')",
+            [],
+        )
+        .unwrap();
+
+        // Seed a chunk row so we can verify it survives the upgrade.
+        conn.execute(
+            "INSERT INTO files (id, path, mtime_secs) VALUES ('f1', 'a.md', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chunks
+             (id, file_id, chunk_index, heading_path, content, content_hash, token_count, embedding)
+             VALUES ('c1', 'f1', 0, 'Alpha', 'hello', 'hash', 1, X'00')",
+            [],
+        )
+        .unwrap();
+
+        ensure_schema(&mut conn).unwrap();
+        assert_eq!(read_version(&conn), Some(SCHEMA_VERSION));
+
+        let cols = column_names(&conn, "chunks");
+        assert!(cols.contains(&"heading_text".to_string()));
+        assert!(cols.contains(&"heading_level".to_string()));
+
+        // Existing row survives, new columns default to NULL.
+        let (text, level): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT heading_text, heading_level FROM chunks WHERE id = 'c1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(text, None);
+        assert_eq!(level, None);
+    }
+
+    #[test]
+    fn no_op_when_already_at_latest() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&mut conn).unwrap();
+        ensure_schema(&mut conn).unwrap();
+        assert_eq!(read_version(&conn), Some(SCHEMA_VERSION));
+    }
+}

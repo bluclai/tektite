@@ -26,6 +26,7 @@ bun run tauri build
 
 ## Rules
 - Run bun lint and bun format after every completed task! fix any issues!
+- Use Ripgrep over grep!
 - Preserve local-first behavior.
 - Markdown files are the source of truth.
 - Avoid introducing lock-in or hidden storage.

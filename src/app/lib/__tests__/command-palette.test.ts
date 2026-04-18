@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  dedupeSemanticHitsByFile,
   filterCommands,
   formatPaletteError,
   parsePaletteQuery,
@@ -35,12 +36,24 @@ describe("command palette helpers", () => {
       mode: "templates",
       searchTerm: "template",
     });
+
+    expect(parsePaletteQuery("? auth flow")).toEqual({
+      mode: "semantic",
+      searchTerm: "auth flow",
+    });
+
+    // `?` with no search term — should still switch modes.
+    expect(parsePaletteQuery("?")).toEqual({
+      mode: "semantic",
+      searchTerm: "",
+    });
   });
 
   it("returns mode-aware placeholder copy", () => {
     expect(placeholderForMode("files")).toBe("Search files...");
     expect(placeholderForMode("headings")).toBe("Search headings...");
     expect(placeholderForMode("templates")).toBe("Search templates...");
+    expect(placeholderForMode("semantic")).toBe("Search by meaning…");
   });
 
   it("filters commands by label, id, and category", () => {
@@ -68,6 +81,30 @@ describe("command palette helpers", () => {
     expect(filterCommands(commands, "pane").map((command) => command.id)).toEqual([
       "panel.unresolved",
     ]);
+  });
+
+  it("dedupes semantic hits by file and keeps first-seen", () => {
+    const hits = [
+      { file_path: "a.md", chunk_id: "a1", score: 0.9 },
+      { file_path: "a.md", chunk_id: "a2", score: 0.8 }, // dropped — a.md already taken
+      { file_path: "b.md", chunk_id: "b1", score: 0.7 },
+      { file_path: "c.md", chunk_id: "c1", score: 0.6 },
+      { file_path: "b.md", chunk_id: "b2", score: 0.5 }, // dropped
+      { file_path: "d.md", chunk_id: "d1", score: 0.4 },
+    ];
+
+    const out = dedupeSemanticHitsByFile(hits, 10);
+    expect(out.map((h) => h.chunk_id)).toEqual(["a1", "b1", "c1", "d1"]);
+  });
+
+  it("slices deduped semantic hits to the limit", () => {
+    const hits = Array.from({ length: 25 }, (_, i) => ({
+      file_path: `f${i}.md`,
+      chunk_id: `c${i}`,
+    }));
+
+    expect(dedupeSemanticHitsByFile(hits, 10)).toHaveLength(10);
+    expect(dedupeSemanticHitsByFile(hits, 10)[0].chunk_id).toBe("c0");
   });
 
   it("formats palette errors safely", () => {

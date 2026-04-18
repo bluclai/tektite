@@ -1,12 +1,19 @@
 import type { CommandAction } from "$lib/stores/commands.svelte";
 
-export type PaletteMode = "files" | "commands" | "headings" | "tags" | "templates";
+export type PaletteMode =
+  | "files"
+  | "commands"
+  | "headings"
+  | "tags"
+  | "templates"
+  | "semantic";
 
 const PREFIX_TO_MODE: Record<string, PaletteMode> = {
   ">": "commands",
   "#": "headings",
   "@": "tags",
   "/": "templates",
+  "?": "semantic",
 };
 
 const MODE_PLACEHOLDERS: Record<PaletteMode, string> = {
@@ -15,6 +22,7 @@ const MODE_PLACEHOLDERS: Record<PaletteMode, string> = {
   headings: "Search headings...",
   tags: "Search tags...",
   templates: "Search templates...",
+  semantic: "Search by meaning…",
 };
 
 export function parsePaletteQuery(query: string): { mode: PaletteMode; searchTerm: string } {
@@ -49,4 +57,25 @@ export function formatPaletteError(error: unknown, fallback: string): string {
   }
 
   return fallback;
+}
+
+/**
+ * Semantic search returns chunk-level hits; the palette shows one row per
+ * file. This collapses consecutive hits by `file_path`, keeping the first
+ * (highest-scoring) occurrence, then slices to `limit` so over-fetching at
+ * the backend is always pared down to a fixed display count.
+ */
+export function dedupeSemanticHitsByFile<T extends { file_path: string }>(
+  hits: readonly T[],
+  limit: number,
+): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const hit of hits) {
+    if (seen.has(hit.file_path)) continue;
+    seen.add(hit.file_path);
+    out.push(hit);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
