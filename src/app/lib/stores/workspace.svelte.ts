@@ -40,6 +40,7 @@ export interface WorkspaceState {
   sidebarWidth: number;
   activePaneId: string;
   paneTree: PaneLayout;
+  focusMode?: boolean;
 }
 
 const WORKSPACE_VERSION = 1;
@@ -59,6 +60,7 @@ let _sidebarOpen = $state<boolean>(true);
 let _sidebarWidth = $state<number>(SIDEBAR_DEFAULT_WIDTH);
 let _activePaneId = $state<string>(_initialLeaf.id);
 let _paneTree = $state<PaneLayout>(_initialLeaf);
+let _focusMode = $state<boolean>(false);
 
 // Memoized lookup of the active leaf's active tab path. Recomputes only
 // when _paneTree or _activePaneId change rather than on every getter read.
@@ -85,6 +87,7 @@ function scheduleSave() {
         sidebarWidth: _sidebarWidth,
         activePaneId: _activePaneId,
         paneTree: _paneTree,
+        focusMode: _focusMode,
       } satisfies WorkspaceState,
     }).catch(() => {});
     _saveTimer = null;
@@ -114,6 +117,15 @@ export const workspaceStore = {
 
   toggleSidebar() {
     _sidebarOpen = !_sidebarOpen;
+    scheduleSave();
+  },
+
+  get focusMode() {
+    return _focusMode;
+  },
+
+  toggleFocusMode() {
+    _focusMode = !_focusMode;
     scheduleSave();
   },
 
@@ -352,6 +364,7 @@ export const workspaceStore = {
         SIDEBAR_MAX_WIDTH,
         Math.max(SIDEBAR_MIN_WIDTH, raw.sidebarWidth ?? SIDEBAR_DEFAULT_WIDTH),
       );
+      _focusMode = raw.focusMode ?? false;
       if (raw.paneTree) {
         _paneTree = raw.paneTree;
         const leaves = allLeaves(_paneTree);
