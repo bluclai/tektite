@@ -1,5 +1,13 @@
 import { workspaceStore } from "$lib/stores/workspace.svelte";
 
+/**
+ * Emitted when the user triggers "Continue with Aura" from the command
+ * palette. EditorPane listens on this global event and requests a
+ * suggestion against its own view — the command store does not reach into
+ * editor state directly so it can stay decoupled from CM6.
+ */
+export const AURA_CONTINUE_EVENT = "tektite:aura-continue";
+
 export interface CommandAction {
   id: string;
   label: string;
@@ -55,6 +63,17 @@ function ensureSeeded() {
       action: () => {
         workspaceStore.setActivePanel("graph");
         workspaceStore.openSidebar();
+      },
+    },
+    {
+      id: "aura.continue",
+      label: "Continue with Aura",
+      category: "Aura",
+      shortcut: "⌘/",
+      action: () => {
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent(AURA_CONTINUE_EVENT));
+        }
       },
     },
   ]);
