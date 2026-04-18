@@ -1,3 +1,4 @@
+import { embedStatusStore } from "$lib/stores/embedStatus.svelte";
 import { filesStore } from "$lib/stores/files.svelte";
 import { indexStatsStore } from "$lib/stores/indexStats.svelte";
 import { operationStore } from "$lib/stores/operationStore.svelte";
@@ -44,8 +45,11 @@ export async function openVault(vaultPath: string): Promise<void> {
     // Subscribe to index stats updates.
     await indexStatsStore.start();
 
-    // Subscribe to transient operation signals (embed progress, agent runs).
+    // Subscribe to transient operation signals (agent runs).
     await operationStore.start();
+
+    // Subscribe to semantic-index health + backlog progress.
+    await embedStatusStore.start();
 
     // Load pinned notes for this vault.
     await pinnedStore.load();

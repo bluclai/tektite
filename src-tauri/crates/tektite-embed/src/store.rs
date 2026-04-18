@@ -39,6 +39,8 @@ pub struct ChunkMetadata {
     pub file_id: String,
     pub file_path: String,
     pub heading_path: Option<String>,
+    pub heading_text: Option<String>,
+    pub heading_level: Option<u8>,
     pub content: String,
 }
 
@@ -68,14 +70,16 @@ impl Store {
                 mtime_secs INTEGER NOT NULL
              );
              CREATE TABLE IF NOT EXISTS chunks (
-                id           TEXT PRIMARY KEY,
-                file_id      TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-                chunk_index  INTEGER NOT NULL,
-                heading_path TEXT,
-                content      TEXT NOT NULL,
-                content_hash TEXT NOT NULL,
-                token_count  INTEGER NOT NULL,
-                embedding    BLOB NOT NULL
+                id            TEXT PRIMARY KEY,
+                file_id       TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                chunk_index   INTEGER NOT NULL,
+                heading_path  TEXT,
+                heading_text  TEXT,
+                heading_level INTEGER,
+                content       TEXT NOT NULL,
+                content_hash  TEXT NOT NULL,
+                token_count   INTEGER NOT NULL,
+                embedding     BLOB NOT NULL
              );
              CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);",
         )?;
@@ -151,7 +155,7 @@ impl Store {
         }
         let placeholders: Vec<&str> = (0..ids.len()).map(|_| "?").collect();
         let sql = format!(
-            "SELECT c.id, c.file_id, f.path, c.heading_path, c.content
+            "SELECT c.id, c.file_id, f.path, c.heading_path, c.heading_text, c.heading_level, c.content
              FROM chunks c
              JOIN files f ON f.id = c.file_id
              WHERE c.id IN ({})",
@@ -159,12 +163,15 @@ impl Store {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(ids.iter()), |row| {
+            let level: Option<i64> = row.get(5)?;
             Ok(ChunkMetadata {
                 id: row.get(0)?,
                 file_id: row.get(1)?,
                 file_path: row.get(2)?,
                 heading_path: row.get(3)?,
-                content: row.get(4)?,
+                heading_text: row.get(4)?,
+                heading_level: level.map(|n| n as u8),
+                content: row.get(6)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -195,13 +202,16 @@ impl Store {
             let bytes = vector_to_bytes(vector);
             tx.execute(
                 "INSERT INTO chunks
-                 (id, file_id, chunk_index, heading_path, content, content_hash, token_count, embedding)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (id, file_id, chunk_index, heading_path, heading_text, heading_level,
+                  content, content_hash, token_count, embedding)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     id,
                     file_id,
                     chunk.chunk_index as i64,
                     chunk.heading_path,
+                    chunk.heading_text,
+                    chunk.heading_level.map(|n| n as i64),
                     chunk.content,
                     chunk.content_hash,
                     chunk.token_count as i64,
@@ -285,6 +295,8 @@ mod tests {
         Chunk {
             chunk_index: index,
             heading_path: Some(format!("H{index}")),
+            heading_text: Some(format!("H{index}")),
+            heading_level: Some(2),
             content: content.to_string(),
             embed_input: content.to_string(),
             content_hash: format!("hash-{content}"),
@@ -395,6 +407,8 @@ mod tests {
         assert_eq!(metas[0].file_path, "notes/a.md");
         assert_eq!(metas[0].content, "hello");
         assert_eq!(metas[0].heading_path.as_deref(), Some("H0"));
+        assert_eq!(metas[0].heading_text.as_deref(), Some("H0"));
+        assert_eq!(metas[0].heading_level, Some(2));
     }
 
     #[test]

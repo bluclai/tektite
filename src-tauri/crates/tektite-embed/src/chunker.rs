@@ -41,6 +41,14 @@ pub struct Chunk {
     /// Hierarchical heading path (e.g. `"Intro / Setup"`). `None` for chunks
     /// that appear before any heading in the file.
     pub heading_path: Option<String>,
+    /// Leaf heading text (e.g. `"Setup"` from `"Intro / Setup"`). `None` for
+    /// chunks that appear before any heading. Populated alongside
+    /// [`heading_level`] so navigation handlers can scroll directly to the
+    /// heading without re-parsing `heading_path`.
+    pub heading_text: Option<String>,
+    /// Markdown level of the leaf heading (1–6). `None` when `heading_text`
+    /// is `None`.
+    pub heading_level: Option<u8>,
     /// Raw chunk text — the body of the chunk without any added prefix.
     /// This is what gets stored in the `chunks.content` column and
     /// surfaced as the search-result snippet.
@@ -72,21 +80,31 @@ pub fn chunk_note(title: &str, note: &ParsedNote) -> Vec<Chunk> {
 #[derive(Debug, Clone)]
 struct RawChunk {
     heading_path: Option<String>,
+    heading_text: Option<String>,
+    heading_level: Option<u8>,
     content: String,
 }
 
 fn split_by_headings(body: &str) -> Vec<RawChunk> {
     let mut stack: Vec<(u8, String)> = Vec::new();
     let mut current_path: Option<String> = None;
+    let mut current_text: Option<String> = None;
+    let mut current_level: Option<u8> = None;
     let mut buf = String::new();
     let mut in_fence = false;
     let mut chunks: Vec<RawChunk> = Vec::new();
 
-    let push = |path: Option<String>, buf: &mut String, out: &mut Vec<RawChunk>| {
+    let push = |path: Option<String>,
+                text: Option<String>,
+                level: Option<u8>,
+                buf: &mut String,
+                out: &mut Vec<RawChunk>| {
         let trimmed = buf.trim();
         if !trimmed.is_empty() {
             out.push(RawChunk {
                 heading_path: path,
+                heading_text: text,
+                heading_level: level,
                 content: trimmed.to_string(),
             });
         }
@@ -105,12 +123,20 @@ fn split_by_headings(body: &str) -> Vec<RawChunk> {
 
         if !in_fence {
             if let Some((level, text)) = parse_atx_heading(stripped) {
-                push(current_path.clone(), &mut buf, &mut chunks);
+                push(
+                    current_path.clone(),
+                    current_text.clone(),
+                    current_level,
+                    &mut buf,
+                    &mut chunks,
+                );
                 while stack.last().is_some_and(|(l, _)| *l >= level) {
                     stack.pop();
                 }
-                stack.push((level, text));
+                stack.push((level, text.clone()));
                 current_path = Some(join_path(&stack));
+                current_text = Some(text);
+                current_level = Some(level);
                 buf.push_str(line);
                 continue;
             }
@@ -119,7 +145,7 @@ fn split_by_headings(body: &str) -> Vec<RawChunk> {
         buf.push_str(line);
     }
 
-    push(current_path, &mut buf, &mut chunks);
+    push(current_path, current_text, current_level, &mut buf, &mut chunks);
     chunks
 }
 
@@ -222,6 +248,8 @@ fn sub_split(chunk: RawChunk, title: &str) -> Vec<RawChunk> {
         if !acc.is_empty() && acc_tokens + para_tokens > MAX_TOKENS {
             out.push(RawChunk {
                 heading_path: chunk.heading_path.clone(),
+                heading_text: chunk.heading_text.clone(),
+                heading_level: chunk.heading_level,
                 content: acc.trim().to_string(),
             });
             acc.clear();
@@ -236,6 +264,8 @@ fn sub_split(chunk: RawChunk, title: &str) -> Vec<RawChunk> {
     if !acc.trim().is_empty() {
         out.push(RawChunk {
             heading_path: chunk.heading_path.clone(),
+            heading_text: chunk.heading_text.clone(),
+            heading_level: chunk.heading_level,
             content: acc.trim().to_string(),
         });
     }
@@ -256,6 +286,8 @@ fn merge_pair(a: &RawChunk, b: &RawChunk) -> RawChunk {
     content.push_str(&b.content);
     RawChunk {
         heading_path: b.heading_path.clone(),
+        heading_text: b.heading_text.clone(),
+        heading_level: b.heading_level,
         content,
     }
 }
@@ -272,6 +304,8 @@ fn build_chunk(index: usize, title: &str, raw: RawChunk) -> Chunk {
     Chunk {
         chunk_index: index,
         heading_path: raw.heading_path,
+        heading_text: raw.heading_text,
+        heading_level: raw.heading_level,
         content: raw.content,
         embed_input,
         content_hash,
@@ -487,5 +521,34 @@ mod tests {
     fn token_count_is_populated() {
         let chunks = chunk_note("T", &parse("# A\nhello world\n"));
         assert!(chunks[0].token_count > 0);
+    }
+
+    // ----- heading_text / heading_level -----
+
+    #[test]
+    fn heading_text_and_level_match_leaf_of_path() {
+        let body = "# A\n## B\n### C\nleaf body text here with content\n";
+        let chunks = chunk_note("T", &parse(body));
+        let last = chunks.last().unwrap();
+        assert_eq!(last.heading_path.as_deref(), Some("A / B / C"));
+        assert_eq!(last.heading_text.as_deref(), Some("C"));
+        assert_eq!(last.heading_level, Some(3));
+    }
+
+    #[test]
+    fn heading_text_is_none_for_headingless_chunk() {
+        let chunks = chunk_note("T", &parse("just prose with no headings at all\n"));
+        assert_eq!(chunks[0].heading_path, None);
+        assert_eq!(chunks[0].heading_text, None);
+        assert_eq!(chunks[0].heading_level, None);
+    }
+
+    #[test]
+    fn merged_chunk_inherits_next_siblings_heading_text() {
+        let body = "# A\nshort.\n# B\nalso short.\n";
+        let chunks = chunk_note("T", &parse(body));
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].heading_text.as_deref(), Some("B"));
+        assert_eq!(chunks[0].heading_level, Some(1));
     }
 }

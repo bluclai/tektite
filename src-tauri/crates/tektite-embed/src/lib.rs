@@ -59,6 +59,14 @@ pub struct SemanticHit {
     pub chunk_id: String,
     pub file_path: String,
     pub heading_path: Option<String>,
+    /// Leaf heading text — what the chunk's section is titled
+    /// (e.g. `"Setup"` from `"Intro / Setup"`). Used by the frontend to
+    /// scroll directly to the heading on click without re-parsing
+    /// `heading_path`. `None` when the chunk has no heading.
+    pub heading_text: Option<String>,
+    /// Markdown level of the leaf heading (1–6). `None` when
+    /// `heading_text` is `None`.
+    pub heading_level: Option<u8>,
     pub snippet: String,
     pub score: f32,
 }
@@ -294,6 +302,8 @@ impl EmbedService {
                 chunk_id: meta.id.clone(),
                 file_path: meta.file_path.clone(),
                 heading_path: meta.heading_path.clone(),
+                heading_text: meta.heading_text.clone(),
+                heading_level: meta.heading_level,
                 snippet: snippet_from(&meta.content),
                 score,
             });
@@ -343,6 +353,8 @@ impl EmbedService {
                 chunk_id: meta.id.clone(),
                 file_path: meta.file_path.clone(),
                 heading_path: meta.heading_path.clone(),
+                heading_text: meta.heading_text.clone(),
+                heading_level: meta.heading_level,
                 snippet: snippet_from(&meta.content),
                 score,
             });
@@ -403,6 +415,8 @@ impl EmbedService {
                 chunk_id: meta.id.clone(),
                 file_path: meta.file_path.clone(),
                 heading_path: meta.heading_path.clone(),
+                heading_text: meta.heading_text.clone(),
+                heading_level: meta.heading_level,
                 snippet: snippet_from(&meta.content),
                 score,
             });
