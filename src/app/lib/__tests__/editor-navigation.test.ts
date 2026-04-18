@@ -4,14 +4,7 @@ import { findMarkdownHeadingPosition, findMarkdownTagPosition } from "../editor-
 
 describe("findMarkdownHeadingPosition", () => {
   it("finds an exact heading by text and level", () => {
-    const content = [
-      "# Intro",
-      "",
-      "## Alpha",
-      "Body",
-      "### Beta",
-      "More",
-    ].join("\n");
+    const content = ["# Intro", "", "## Alpha", "Body", "### Beta", "More"].join("\n");
 
     expect(findMarkdownHeadingPosition(content, "Alpha", 2)).toBe(9);
     expect(findMarkdownHeadingPosition(content, "Beta", 3)).toBe(23);

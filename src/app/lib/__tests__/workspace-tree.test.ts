@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import {
   nameFromPath,
   makeTab,
@@ -279,11 +280,7 @@ describe("allLeaves", () => {
     const leaf = makeLeaf();
     const [split1] = splitLayout(leaf, leaf.id, "horizontal")!;
     const rightLeaf = allLeaves(split1)[1];
-    const [split2] = splitLayout(
-      split1 as PaneLayout,
-      rightLeaf.id,
-      "vertical",
-    )!;
+    const [split2] = splitLayout(split1 as PaneLayout, rightLeaf.id, "vertical")!;
     const leaves = allLeaves(split2);
     expect(leaves).toHaveLength(3);
     // Leftmost should be original leaf
@@ -419,35 +416,25 @@ describe("resizeSplitInTree", () => {
 
 describe("renamePathValue", () => {
   it("renames exact path match", () => {
-    expect(renamePathValue("notes/a.md", "notes/a.md", "notes/b.md")).toBe(
-      "notes/b.md",
-    );
+    expect(renamePathValue("notes/a.md", "notes/a.md", "notes/b.md")).toBe("notes/b.md");
   });
 
   it("renames prefix for child paths", () => {
-    expect(renamePathValue("notes/a/child.md", "notes/a", "notes/b")).toBe(
-      "notes/b/child.md",
-    );
+    expect(renamePathValue("notes/a/child.md", "notes/a", "notes/b")).toBe("notes/b/child.md");
   });
 
   it("does not rename unrelated paths", () => {
-    expect(renamePathValue("other/c.md", "notes/a.md", "notes/b.md")).toBe(
-      "other/c.md",
-    );
+    expect(renamePathValue("other/c.md", "notes/a.md", "notes/b.md")).toBe("other/c.md");
   });
 
   it("does not partial-match directory names (e.g. notes/a2 vs notes/a)", () => {
-    expect(renamePathValue("notes/a2/file.md", "notes/a", "notes/b")).toBe(
-      "notes/a2/file.md",
-    );
+    expect(renamePathValue("notes/a2/file.md", "notes/a", "notes/b")).toBe("notes/a2/file.md");
   });
 
   it("does not match when oldPath has trailing slash — produces double slash", () => {
     // oldPath "notes/a/" creates prefix "notes/a//" which never matches a normal path.
     // Pinning current behavior: this is a silent no-op.
-    expect(renamePathValue("notes/a/child.md", "notes/a/", "notes/b")).toBe(
-      "notes/a/child.md",
-    );
+    expect(renamePathValue("notes/a/child.md", "notes/a/", "notes/b")).toBe("notes/a/child.md");
   });
 });
 
@@ -515,9 +502,7 @@ describe("renamePathsInTree", () => {
     const withA = leafOpenTab(leaf, "notes/a.md");
     const [split, newLeafId] = splitLayout(withA, withA.id, "horizontal")!;
     // Open same file in right leaf
-    const updated = mapLeaf(split, newLeafId, (p) =>
-      leafOpenTab(p, "notes/a.md"),
-    );
+    const updated = mapLeaf(split, newLeafId, (p) => leafOpenTab(p, "notes/a.md"));
     const result = renamePathsInTree(updated, "notes/a.md", "notes/b.md");
     const leaves = allLeaves(result);
     for (const l of leaves) {

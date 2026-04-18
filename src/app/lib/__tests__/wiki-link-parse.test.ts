@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { parseWikiLinks, rootNotePathForTarget, initialContentForTarget } from "../editor/wiki-link-parse";
+
+import {
+  parseWikiLinks,
+  rootNotePathForTarget,
+  initialContentForTarget,
+} from "../editor/wiki-link-parse";
 
 // ---------------------------------------------------------------------------
 // parseWikiLinks
