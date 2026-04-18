@@ -31,14 +31,24 @@ import type { Completion, CompletionResult } from "@codemirror/autocomplete";
 import type { Extension } from "@codemirror/state";
 import type { DecorationSet, Tooltip } from "@codemirror/view";
 
+import { filesStore } from "$lib/stores/files.svelte";
 import { autocompletion, CompletionContext } from "@codemirror/autocomplete";
 import { StateField, StateEffect, RangeSetBuilder } from "@codemirror/state";
-import { EditorView, Decoration, ViewPlugin, ViewUpdate, keymap, hoverTooltip, showTooltip } from "@codemirror/view";
+import {
+  EditorView,
+  Decoration,
+  ViewPlugin,
+  ViewUpdate,
+  keymap,
+  hoverTooltip,
+  showTooltip,
+} from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
 import { marked } from "marked";
-import { filesStore } from "$lib/stores/files.svelte";
-import { parseWikiLinks, rootNotePathForTarget, initialContentForTarget } from "./wiki-link-parse";
+
 import type { WikiLink } from "./wiki-link-parse";
+
+import { parseWikiLinks, rootNotePathForTarget, initialContentForTarget } from "./wiki-link-parse";
 export type { WikiLink } from "./wiki-link-parse";
 
 // ---------------------------------------------------------------------------
@@ -371,7 +381,10 @@ const setLinkHandlers = StateEffect.define<LinkHandlers | null>();
 
 // rootNotePathForTarget and initialContentForTarget are now imported from wiki-link-parse.ts
 
-async function createRootNoteForUnresolvedLink(target: string, handlers: LinkHandlers): Promise<boolean> {
+async function createRootNoteForUnresolvedLink(
+  target: string,
+  handlers: LinkHandlers,
+): Promise<boolean> {
   const relPath = rootNotePathForTarget(target);
   if (!relPath) return false;
 
@@ -511,9 +524,7 @@ export async function wikiLinkCompletionSource(
     .sort((a, b) => a.path.localeCompare(b.path))
     .map((file) => {
       const needsQualifiedInsert = (nameCounts.get(file.name) ?? 0) > 1;
-      const insertTarget = needsQualifiedInsert
-        ? file.path.replace(/\.md$/i, "")
-        : file.name;
+      const insertTarget = needsQualifiedInsert ? file.path.replace(/\.md$/i, "") : file.name;
 
       return {
         label: file.name,
@@ -776,7 +787,10 @@ function findHeadingLine(lines: string[], fragment: string): number {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trimStart();
     if (line.startsWith("#")) {
-      const text = line.replace(/^#+\s*/, "").trim().toLowerCase();
+      const text = line
+        .replace(/^#+\s*/, "")
+        .trim()
+        .toLowerCase();
       if (text === target) return i;
     }
   }
