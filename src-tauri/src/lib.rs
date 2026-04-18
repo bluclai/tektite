@@ -1089,6 +1089,42 @@ fn search_similar_chunks(
         .map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Aura — generative continuation (Phase 6)
+// ---------------------------------------------------------------------------
+
+/// Returns a stub continuation for the given cursor position in a file.
+///
+/// Phase-6 scope: returns a canned suggestion so the UI surface, keybindings,
+/// and accept/dismiss flow can be exercised. Real model-backed continuation
+/// will replace this body in a later phase.
+#[tauri::command]
+fn aura_continue(file_path: String, cursor_offset: usize) -> Result<String, String> {
+    let content = fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to open {file_path}: {e}"))?;
+
+    // Take up to ~120 chars of preceding context for a tiny bit of flavour.
+    // The real impl will feed this plus more into the local model.
+    let upto = cursor_offset.min(content.len());
+    let window_start = upto.saturating_sub(120);
+    let prefix = &content[window_start..upto];
+    let trimmed = prefix.trim_end();
+
+    let ends_with_sentence = trimmed
+        .chars()
+        .last()
+        .map(|c| matches!(c, '.' | '!' | '?'))
+        .unwrap_or(true);
+
+    let suggestion = if ends_with_sentence {
+        "The thought unfurls further here — a quiet elaboration the writer might pick up, or sweep aside with a keystroke."
+    } else {
+        "…and the sentence finds its footing, settling into a cadence the writer can either carry forward or dismiss."
+    };
+
+    Ok(suggestion.to_string())
+}
+
 /// Derives the display title used when embedding chunks for this note.
 /// Mirrors `tektite_vault::note_title` but that helper is crate-private.
 fn embed_title(rel_path: &str, note: &tektite_parser::ParsedNote) -> String {
@@ -1259,6 +1295,42 @@ fn workspace_save(app: tauri::AppHandle, state: serde_json::Value) -> Result<(),
 }
 
 // ---------------------------------------------------------------------------
+// Pinned notes persistence
+// ---------------------------------------------------------------------------
+//
+// Persisted per-vault at `<vault_root>/.tektite/pinned.json`. Contents are
+// opaque JSON owned by the frontend — we just read/write the file.
+
+fn pinned_path(vault_state: &State<VaultState>) -> Result<PathBuf, String> {
+    let guard = vault_state.0.lock().unwrap();
+    let vault = guard.as_ref().ok_or_else(|| "No vault open".to_string())?;
+    Ok(vault.root.join(".tektite").join("pinned.json"))
+}
+
+#[tauri::command]
+fn pinned_load(vault_state: State<VaultState>) -> Result<serde_json::Value, String> {
+    let path = pinned_path(&vault_state)?;
+    if !path.exists() {
+        return Ok(serde_json::json!({ "version": 1, "paths": [] }));
+    }
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn pinned_save(
+    vault_state: State<VaultState>,
+    state: serde_json::Value,
+) -> Result<(), String> {
+    let path = pinned_path(&vault_state)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // App entry point
 // ---------------------------------------------------------------------------
 
@@ -1302,6 +1374,9 @@ pub fn run() {
             search_similar_chunks,
             workspace_load,
             workspace_save,
+            pinned_load,
+            pinned_save,
+            aura_continue,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
