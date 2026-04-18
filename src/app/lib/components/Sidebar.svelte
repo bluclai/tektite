@@ -6,6 +6,7 @@
     import FileExplorer from '$lib/components/FileExplorer.svelte';
     import SearchPanel from '$lib/components/SearchPanel.svelte';
     import BacklinksPanel from '$lib/components/BacklinksPanel.svelte';
+    import RelatedNotesPanel from '$lib/components/RelatedNotesPanel.svelte';
     import UnresolvedLinksPanel from '$lib/components/UnresolvedLinksPanel.svelte';
     import GraphPanel from '$lib/components/GraphPanel.svelte';
     import VaultPopover from '$lib/components/VaultPopover.svelte';
@@ -140,6 +141,8 @@
                 <SearchPanel />
             {:else if workspaceStore.activePanel === 'backlinks'}
                 <BacklinksPanel />
+            {:else if workspaceStore.activePanel === 'related'}
+                <RelatedNotesPanel />
             {:else if workspaceStore.activePanel === 'unresolved'}
                 <UnresolvedLinksPanel />
             {:else if workspaceStore.activePanel === 'graph'}
