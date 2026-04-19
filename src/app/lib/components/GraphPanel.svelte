@@ -466,11 +466,12 @@
 	// Interaction
 	// ---------------------------------------------------------------------------
 
-	function handleNodeClick(n: SimNode) {
+	function handleNodeClick(n: SimNode, e: MouseEvent | KeyboardEvent) {
 		const vaultRoot = vaultStore.path;
 		const absPath =
 			vaultRoot && !n.path.startsWith(vaultRoot) ? `${vaultRoot}/${n.path}` : n.path;
-		workspaceStore.openTab(absPath);
+		const forceNew = e.metaKey || e.ctrlKey;
+		workspaceStore.openTab(absPath, { forceNew });
 	}
 
 	// Zoom — wheel scales around cursor
@@ -830,11 +831,11 @@
 							class="graph-node"
 							class:graph-node--center={node.isCenter}
 							class:graph-node--semantic={node.isSemanticOnly}
-							onclick={() => handleNodeClick(node)}
+							onclick={(e) => handleNodeClick(node, e)}
 							onkeydown={(e) => {
 								if (e.key === 'Enter' || e.key === ' ') {
 									e.preventDefault();
-									handleNodeClick(node);
+									handleNodeClick(node, e);
 								}
 							}}
 							onpointerenter={() => (hoveredNode = node)}

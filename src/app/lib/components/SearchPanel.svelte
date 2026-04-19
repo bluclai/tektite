@@ -72,8 +72,9 @@
 		return `${vaultStore.path}/${path}`;
 	}
 
-	function openFile(path: string) {
-		workspaceStore.openTab(toAbsolutePath(path));
+	function openFile(path: string, e: MouseEvent | KeyboardEvent) {
+		const forceNew = e.metaKey || e.ctrlKey;
+		workspaceStore.openTab(toAbsolutePath(path), { forceNew });
 		query = '';
 	}
 
@@ -122,7 +123,7 @@
 				{#each results as row, index (getResultKey(row, index))}
 					<button
 						type="button"
-						onclick={() => openFile(row.path)}
+						onclick={(e) => openFile(row.path, e)}
 						class="w-full border-none bg-transparent p-3 text-left hover:bg-surface-container-low focus:bg-surface-container-low focus:outline-none"
 					>
 						<!-- File title/name -->

@@ -107,14 +107,15 @@
 	// Actions
 	// ---------------------------------------------------------------------------
 
-	function openSource(entry: BacklinkEntry) {
+	function openSource(entry: BacklinkEntry, e: MouseEvent | KeyboardEvent) {
 		// source_path is vault-relative; openTab expects absolute path.
 		const vaultRoot = vaultStore.path;
 		const absPath =
 			vaultRoot && !entry.source_path.startsWith(vaultRoot)
 				? `${vaultRoot}/${entry.source_path}`
 				: entry.source_path;
-		workspaceStore.openTab(absPath);
+		const forceNew = e.metaKey || e.ctrlKey;
+		workspaceStore.openTab(absPath, { forceNew });
 	}
 
 	/** Format the link reference as it appears in the source — e.g. [[Note#heading|alias]] */
@@ -168,7 +169,7 @@
 			{#each backlinks as entry (entry.source_path + entry.target + (entry.fragment ?? ''))}
 				<button
 					type="button"
-					onclick={() => openSource(entry)}
+					onclick={(e) => openSource(entry, e)}
 					class="w-full border-none bg-transparent p-3 text-left hover:bg-surface-container-low focus:bg-surface-container-low focus:outline-none"
 				>
 					<!-- Source note name -->

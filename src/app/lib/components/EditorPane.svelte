@@ -91,6 +91,13 @@
     let loadError = $state<string | null>(null);
     let currentContent = $state('');
 
+    // Per-tab dirty flag: mirror local buffer != last persisted content into
+    // the workspace store so β-swap can refuse to overwrite an unsaved tab.
+    $effect(() => {
+        const dirty = currentContent !== lastSavedContent;
+        workspaceStore.setTabDirtyByPath(path, dirty);
+    });
+
     // ---------------------------------------------------------------------------
     // Doc header — derived from frontmatter + filename. Not editable.
     // ---------------------------------------------------------------------------
@@ -575,11 +582,11 @@
                         wikiLinkExtension({
                             vaultRoot,
                             sourcePath,
-                            onFollow(resolvedPath) {
+                            onFollow(resolvedPath, opts) {
                                 // index_resolve_link returns vault-relative paths.
                                 // Tabs store vault-relative paths; LeafPane prepends
                                 // vaultStore.path to construct absolute paths for EditorPane.
-                                workspaceStore.openTab(resolvedPath);
+                                workspaceStore.openTab(resolvedPath, { forceNew: opts?.forceNew });
                             },
                             onAmbiguous(t, ps) {
                                 ambiguousTarget = t;

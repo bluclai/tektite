@@ -107,13 +107,14 @@
         return entry.source_title || entry.source_path.split('/').pop() || entry.source_path;
     }
 
-    function openSource(entry: UnresolvedSourceRef) {
+    function openSource(entry: UnresolvedSourceRef, e: MouseEvent | KeyboardEvent) {
         const vaultRoot = vaultStore.path;
         const absPath =
             vaultRoot && !entry.source_path.startsWith(vaultRoot)
                 ? `${vaultRoot}/${entry.source_path}`
                 : entry.source_path;
-        workspaceStore.openTab(absPath);
+        const forceNew = e.metaKey || e.ctrlKey;
+        workspaceStore.openTab(absPath, { forceNew });
     }
 
     async function fetchReport() {
@@ -192,7 +193,9 @@
 
         try {
             await filesStore.createFile(relPath, initialContent);
-            workspaceStore.openTab(relPath);
+            // Fresh note from an unresolved link — commit as a new tab so the
+            // current tab's content isn't displaced by the creation flow.
+            workspaceStore.openTab(relPath, { forceNew: true });
             editorStore.setSaveState('saved', {
                 detail: 'Created note from unresolved link',
                 target: relPath,
@@ -379,7 +382,7 @@
                                         <button
                                             type="button"
                                             class="w-full border-none bg-transparent p-3 text-left hover:bg-surface-container-low focus:bg-surface-container-low focus:outline-none"
-                                            onclick={() => openSource(source)}
+                                            onclick={(e) => openSource(source, e)}
                                         >
                                             <div class="mb-0.5 text-xs font-medium text-primary">
                                                 {getDisplayTitle(source)}

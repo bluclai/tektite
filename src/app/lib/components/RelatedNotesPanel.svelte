@@ -179,7 +179,7 @@
 			{#each hits as hit (hit.chunk_id)}
 				<button
 					type="button"
-					onclick={() => openSemanticHit(hit)}
+					onclick={(e) => openSemanticHit(hit, { forceNew: e.metaKey || e.ctrlKey })}
 					class="w-full border-none bg-transparent p-3 text-left hover:bg-surface-container-low focus:bg-surface-container-low focus:outline-none"
 				>
 					<div class="truncate text-xs font-medium text-primary">

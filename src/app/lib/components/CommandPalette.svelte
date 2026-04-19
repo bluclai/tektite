@@ -65,6 +65,30 @@
 	const FTS_DEBOUNCE_MS = 100;
 	const SEMANTIC_DEBOUNCE_MS = 250;
 
+	/**
+	 * bits.Command `onSelect` does not receive the originating event, so we
+	 * can't read modifier keys on the selection itself. Capture them on the
+	 * dialog root and let the next `onSelect` consume the flag.
+	 */
+	let nextForceNew = $state(false);
+
+	function consumeForceNew(): boolean {
+		const v = nextForceNew;
+		nextForceNew = false;
+		return v;
+	}
+
+	function onDialogPointerDown(e: PointerEvent) {
+		nextForceNew = e.metaKey || e.ctrlKey;
+	}
+
+	function onDialogKeyDown(e: KeyboardEvent) {
+		// Cmd/Ctrl+Enter triggers an append from the current selection.
+		if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+			nextForceNew = true;
+		}
+	}
+
 	const parsedQuery = $derived(parsePaletteQuery(query));
 	const mode = $derived(parsedQuery.mode);
 	const searchTerm = $derived(parsedQuery.searchTerm);
@@ -217,7 +241,8 @@
 	}
 
 	function openVaultPath(path: string, detail: string) {
-		workspaceStore.openTab(toAbsolutePath(path));
+		const forceNew = consumeForceNew();
+		workspaceStore.openTab(toAbsolutePath(path), { forceNew });
 		editorStore.setSaveState('saved', {
 			detail,
 			target: path,
@@ -283,7 +308,9 @@
 				now: new Date(),
 			});
 			await filesStore.createFile(built.path, built.content);
-			workspaceStore.openTab(built.path);
+			// Creating a note from a template is an intentional new doc —
+			// commit as a fresh tab instead of swapping.
+			workspaceStore.openTab(built.path, { forceNew: true });
 			editorStore.setSaveState('saved', {
 				detail: built.successDetail,
 				target: built.path,
@@ -332,6 +359,8 @@
 
 <Command.Dialog {open} title="Command Palette" description="" shouldFilter={false}>
 	{#snippet children()}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div onpointerdowncapture={onDialogPointerDown} onkeydowncapture={onDialogKeyDown} class="contents">
 		<Command.Input bind:value={query} placeholder={modePlaceholder} autofocus disabled={isExecuting} />
 		<Command.List>
 			{#if query === ''}
@@ -471,5 +500,6 @@
 				{/if}
 			{/if}
 		</Command.List>
+		</div>
 	{/snippet}
 </Command.Dialog>

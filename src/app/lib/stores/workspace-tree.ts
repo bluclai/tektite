@@ -15,6 +15,18 @@ export interface PaneTab {
   path: string;
   /** Filename extracted from path for display */
   name: string;
+  /**
+   * Discriminator — Phase 1 only uses `'file'`. Phase 2 extends to
+   * `'view'` (graph view, etc.) for non-file tabs that should never
+   * be the target of a swap.
+   */
+  kind: "file";
+  /**
+   * True while the tab has unsaved edits. Controls whether the tab is
+   * eligible for β-swap: dirty tabs never get their path mutated out from
+   * under the user (dirty-sticky safety).
+   */
+  dirty?: boolean;
 }
 
 export interface LeafPane {
@@ -47,7 +59,16 @@ export function nameFromPath(path: string): string {
 }
 
 export function makeTab(path: string): PaneTab {
-  return { id: crypto.randomUUID(), path, name: nameFromPath(path) };
+  return { id: crypto.randomUUID(), path, name: nameFromPath(path), kind: "file" };
+}
+
+/**
+ * A tab is swappable when its content can be replaced in-place without
+ * losing user work. Phase 1: swappable iff not dirty (view-kind tabs land
+ * in Phase 2 and will also be rejected).
+ */
+export function isSwappable(tab: PaneTab): boolean {
+  return tab.kind === "file" && !tab.dirty;
 }
 
 export function makeLeaf(): LeafPane {
@@ -79,6 +100,38 @@ export function leafCloseTab(pane: LeafPane, tabId: string): LeafPane {
 
 export function leafActivateTab(pane: LeafPane, tabId: string): LeafPane {
   return { ...pane, activeTabId: tabId };
+}
+
+/**
+ * β plain-swap: if the active tab is swappable, replace its path+name in
+ * place; otherwise fall back to appending a new tab. If the path is already
+ * open as any tab in the pane, just activate that tab (dedupe).
+ */
+export function leafSwapActiveTab(pane: LeafPane, path: string): LeafPane {
+  const existing = pane.tabs.find((t) => t.path === path);
+  if (existing) return { ...pane, activeTabId: existing.id };
+
+  const active = pane.tabs.find((t) => t.id === pane.activeTabId) ?? null;
+  if (!active || !isSwappable(active)) {
+    return leafOpenTab(pane, path);
+  }
+
+  const tabs = pane.tabs.map((t) =>
+    t.id === active.id ? { ...t, path, name: nameFromPath(path) } : t,
+  );
+  return { ...pane, tabs };
+}
+
+/** Set the dirty flag on a specific tab. */
+export function leafSetTabDirty(pane: LeafPane, tabId: string, dirty: boolean): LeafPane {
+  const idx = pane.tabs.findIndex((t) => t.id === tabId);
+  if (idx === -1) return pane;
+  const tab = pane.tabs[idx];
+  const currentDirty = tab.dirty ?? false;
+  if (currentDirty === dirty) return pane;
+  const tabs = pane.tabs.slice();
+  tabs[idx] = { ...tab, dirty };
+  return { ...pane, tabs };
 }
 
 // ---------------------------------------------------------------------------

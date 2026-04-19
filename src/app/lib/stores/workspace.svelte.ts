@@ -9,6 +9,8 @@ import {
   makeTab,
   makeLeaf,
   leafOpenTab,
+  leafSwapActiveTab,
+  leafSetTabDirty,
   leafCloseTab,
   leafActivateTab,
   mapLeaf,
@@ -51,7 +53,7 @@ export interface WorkspaceState {
   focusMode?: boolean;
 }
 
-const WORKSPACE_VERSION = 1;
+const WORKSPACE_VERSION = 2;
 const SIDEBAR_DEFAULT_WIDTH = 240;
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 480;
@@ -177,17 +179,50 @@ export const workspaceStore = {
     scheduleSave();
   },
 
-  /** Open a tab in the currently active pane. Used by FileExplorer and other callers. */
-  openTab(path: string) {
-    _paneTree = mapLeaf(_paneTree, _activePaneId, (p) => leafOpenTab(p, path));
+  /**
+   * Open a tab in the currently active pane.
+   *
+   * Default (β plain-swap): if the active tab is swappable, mutates its
+   * path in place instead of appending a new tab. Pass `{ forceNew: true }`
+   * to skip the swap and always append (Cmd/Ctrl+click, double-click,
+   * "open in new tab" actions).
+   */
+  openTab(path: string, opts?: { forceNew?: boolean }) {
+    const forceNew = opts?.forceNew ?? false;
+    _paneTree = mapLeaf(_paneTree, _activePaneId, (p) =>
+      forceNew ? leafOpenTab(p, path) : leafSwapActiveTab(p, path),
+    );
     scheduleSave();
   },
 
   /** Open a tab in a specific pane by ID. */
-  openTabInPane(paneId: string, path: string) {
-    _paneTree = mapLeaf(_paneTree, paneId, (p) => leafOpenTab(p, path));
+  openTabInPane(paneId: string, path: string, opts?: { forceNew?: boolean }) {
+    const forceNew = opts?.forceNew ?? false;
+    _paneTree = mapLeaf(_paneTree, paneId, (p) =>
+      forceNew ? leafOpenTab(p, path) : leafSwapActiveTab(p, path),
+    );
     _activePaneId = paneId;
     scheduleSave();
+  },
+
+  /**
+   * Set the dirty flag on a tab. Dirty tabs are ineligible for β-swap —
+   * subsequent `openTab` calls land as appends until the tab becomes clean.
+   */
+  setTabDirty(paneId: string, tabId: string, dirty: boolean) {
+    _paneTree = mapLeaf(_paneTree, paneId, (p) => leafSetTabDirty(p, tabId, dirty));
+    // Dirty toggles during editing — don't thrash persistence; the next
+    // meaningful change (close, activate, resize) will flush.
+  },
+
+  /** Set dirty by path across the active pane. Convenience for editor wiring. */
+  setTabDirtyByPath(path: string, dirty: boolean) {
+    for (const leaf of allLeaves(_paneTree)) {
+      const tab = leaf.tabs.find((t) => t.path === path);
+      if (tab) {
+        _paneTree = mapLeaf(_paneTree, leaf.id, (p) => leafSetTabDirty(p, tab.id, dirty));
+      }
+    }
   },
 
   closeTab(paneId: string, tabId: string) {
@@ -362,8 +397,13 @@ export const workspaceStore = {
   // --- Boot ---
   async load() {
     try {
-      const raw = await invoke<WorkspaceState>("workspace_load");
-      if (!raw || raw.version !== WORKSPACE_VERSION) return;
+      const raw = await invoke<WorkspaceState & { version: number }>("workspace_load");
+      if (!raw) return;
+
+      // Forward-compat: future versions should win silently rather than
+      // being mangled by an older migration. Only v1 and v2 are handled.
+      if (raw.version !== 1 && raw.version !== WORKSPACE_VERSION) return;
+
       _activePanel = raw.activePanel ?? "files";
       _sidebarOpen = raw.sidebarOpen ?? true;
       _sidebarWidth = Math.min(
@@ -372,15 +412,42 @@ export const workspaceStore = {
       );
       _focusMode = raw.focusMode ?? false;
       if (raw.paneTree) {
-        _paneTree = raw.paneTree;
+        _paneTree = raw.version === 1 ? migrateTreeV1ToV2(raw.paneTree) : raw.paneTree;
         const leaves = allLeaves(_paneTree);
         const activeExists = leaves.some((l) => l.id === raw.activePaneId);
         _activePaneId = activeExists ? raw.activePaneId : firstLeafId(_paneTree);
       }
+
+      if (raw.version === 1) scheduleSave(); // persist the migrated shape
     } catch {
       // Missing or corrupt workspace.json — use defaults silently
     }
   },
 };
+
+/**
+ * Migrate v1 tabs (no `kind`) to v2 by stamping every tab with `kind: 'file'`.
+ * Dirty is left undefined so existing state doesn't pretend to be mid-edit.
+ */
+function migrateTreeV1ToV2(layout: PaneLayout): PaneLayout {
+  if (layout.type === "leaf") {
+    const tabs = layout.tabs.map((t) => {
+      // Tab was persisted before kind existed; coerce to file kind.
+      // Drop any unknown fields defensively.
+      return {
+        id: t.id,
+        path: t.path,
+        name: t.name ?? nameFromPath(t.path),
+        kind: "file" as const,
+      };
+    });
+    return { ...layout, tabs };
+  }
+  return {
+    ...layout,
+    a: migrateTreeV1ToV2(layout.a),
+    b: migrateTreeV1ToV2(layout.b),
+  };
+}
 
 export { SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH };
