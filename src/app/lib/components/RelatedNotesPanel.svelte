@@ -38,7 +38,7 @@
 		const activeLeaf = leaves.find((l) => l.id === workspaceStore.activePaneId);
 		if (!activeLeaf || !activeLeaf.activeTabId) return null;
 		const tab = activeLeaf.tabs.find((t) => t.id === activeLeaf.activeTabId);
-		if (!tab) return null;
+		if (!tab || tab.kind !== 'file') return null;
 
 		const vaultRoot = vaultStore.path;
 		if (vaultRoot && tab.path.startsWith(vaultRoot + '/')) {
@@ -179,7 +179,7 @@
 			{#each hits as hit (hit.chunk_id)}
 				<button
 					type="button"
-					onclick={() => openSemanticHit(hit)}
+					onclick={(e) => openSemanticHit(hit, { forceNew: e.metaKey || e.ctrlKey })}
 					class="w-full border-none bg-transparent p-3 text-left hover:bg-surface-container-low focus:bg-surface-container-low focus:outline-none"
 				>
 					<div class="truncate text-xs font-medium text-primary">

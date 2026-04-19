@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
+import type { PaneTab } from "../stores/workspace-tree";
+
 // Hoisted mock survives vi.resetModules() because the factory captures it.
 const invokeMock = vi.hoisted(() => vi.fn());
 
@@ -8,6 +10,16 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 type WorkspaceModule = typeof import("../stores/workspace.svelte");
+
+/**
+ * Narrow a tab to its file-kind form. All tabs in this test file are opened
+ * via `openTab(path)`, which produces file tabs — so the cast is safe and
+ * keeps assertions readable despite the discriminated union.
+ */
+function asFile(tab: PaneTab): { id: string; path: string; name: string } {
+  if (tab.kind !== "file") throw new Error(`expected file tab, got ${tab.kind}`);
+  return tab;
+}
 
 /**
  * Re-import the store with a fresh module state. The store is a module-level
@@ -115,18 +127,58 @@ describe("workspaceStore — pane tree basics", () => {
     const tree = mod.workspaceStore.paneTree;
     if (tree.type !== "leaf") throw new Error("expected leaf");
     expect(tree.tabs).toHaveLength(1);
-    expect(tree.tabs[0].path).toBe("a.md");
+    expect(asFile(tree.tabs[0]).path).toBe("a.md");
     expect(tree.activeTabId).toBe(tree.tabs[0].id);
   });
 
   it("openTab de-duplicates — opening the same path just activates it", () => {
-    mod.workspaceStore.openTab("a.md");
-    mod.workspaceStore.openTab("b.md");
-    mod.workspaceStore.openTab("a.md"); // re-open
+    // forceNew to explicitly request stacking (the default is β-swap now)
+    mod.workspaceStore.openTab("a.md", { forceNew: true });
+    mod.workspaceStore.openTab("b.md", { forceNew: true });
+    mod.workspaceStore.openTab("a.md", { forceNew: true }); // re-open
     const tree = mod.workspaceStore.paneTree;
     if (tree.type !== "leaf") throw new Error("expected leaf");
     expect(tree.tabs).toHaveLength(2);
     expect(tree.activeTabId).toBe(tree.tabs[0].id); // a.md
+  });
+
+  it("openTab default behavior: β-swap replaces the active tab's path in place", () => {
+    mod.workspaceStore.openTab("a.md");
+    const firstTabId = (() => {
+      const tree = mod.workspaceStore.paneTree;
+      if (tree.type !== "leaf") throw new Error("expected leaf");
+      return tree.tabs[0].id;
+    })();
+
+    mod.workspaceStore.openTab("b.md"); // β-swap (no forceNew)
+
+    const tree = mod.workspaceStore.paneTree;
+    if (tree.type !== "leaf") throw new Error("expected leaf");
+    expect(tree.tabs).toHaveLength(1);
+    expect(tree.tabs[0].id).toBe(firstTabId); // same tab, swapped content
+    expect(asFile(tree.tabs[0]).path).toBe("b.md");
+  });
+
+  it("openTab forceNew appends instead of swapping", () => {
+    mod.workspaceStore.openTab("a.md");
+    mod.workspaceStore.openTab("b.md", { forceNew: true });
+    const tree = mod.workspaceStore.paneTree;
+    if (tree.type !== "leaf") throw new Error("expected leaf");
+    expect(tree.tabs).toHaveLength(2);
+    expect(tree.tabs.map((t) => asFile(t).path)).toEqual(["a.md", "b.md"]);
+  });
+
+  it("openTab on a dirty tab falls back to append (dirty-sticky safety)", () => {
+    mod.workspaceStore.openTab("a.md");
+    const tree = mod.workspaceStore.paneTree;
+    if (tree.type !== "leaf") throw new Error("expected leaf");
+    mod.workspaceStore.setTabDirty(mod.workspaceStore.activePaneId, tree.tabs[0].id, true);
+
+    mod.workspaceStore.openTab("b.md"); // would swap, but a is dirty → append
+
+    const after = mod.workspaceStore.paneTree;
+    if (after.type !== "leaf") throw new Error("expected leaf");
+    expect(after.tabs.map((t) => asFile(t).path)).toEqual(["a.md", "b.md"]);
   });
 
   it("openTabInPane targets a specific pane and makes it active", () => {
@@ -203,8 +255,8 @@ describe("workspaceStore — closeTab collapse", () => {
   });
 
   it("closing a non-last tab does NOT collapse", () => {
-    mod.workspaceStore.openTab("a.md");
-    mod.workspaceStore.openTab("b.md");
+    mod.workspaceStore.openTab("a.md", { forceNew: true });
+    mod.workspaceStore.openTab("b.md", { forceNew: true });
     const paneId = mod.workspaceStore.activePaneId;
     const tree = mod.workspaceStore.paneTree;
     if (tree.type !== "leaf") throw new Error("expected leaf");
@@ -216,7 +268,7 @@ describe("workspaceStore — closeTab collapse", () => {
     expect(after.type).toBe("leaf");
     if (after.type === "leaf") {
       expect(after.tabs).toHaveLength(1);
-      expect(after.tabs[0].path).toBe("b.md");
+      expect(asFile(after.tabs[0]).path).toBe("b.md");
     }
   });
 
@@ -248,9 +300,9 @@ describe("workspaceStore — closeOtherTabs / closeTabsToRight", () => {
   });
 
   it("closeOtherTabs keeps only the specified tab", () => {
-    mod.workspaceStore.openTab("a.md");
-    mod.workspaceStore.openTab("b.md");
-    mod.workspaceStore.openTab("c.md");
+    mod.workspaceStore.openTab("a.md", { forceNew: true });
+    mod.workspaceStore.openTab("b.md", { forceNew: true });
+    mod.workspaceStore.openTab("c.md", { forceNew: true });
     const paneId = mod.workspaceStore.activePaneId;
     const tree = mod.workspaceStore.paneTree;
     if (tree.type !== "leaf") throw new Error("expected leaf");
@@ -261,16 +313,16 @@ describe("workspaceStore — closeOtherTabs / closeTabsToRight", () => {
     const after = mod.workspaceStore.paneTree;
     if (after.type === "leaf") {
       expect(after.tabs).toHaveLength(1);
-      expect(after.tabs[0].path).toBe("b.md");
+      expect(asFile(after.tabs[0]).path).toBe("b.md");
       expect(after.activeTabId).toBe(keepId);
     }
   });
 
   it("closeTabsToRight keeps the specified tab and everything before it", () => {
-    mod.workspaceStore.openTab("a.md");
-    mod.workspaceStore.openTab("b.md");
-    mod.workspaceStore.openTab("c.md");
-    mod.workspaceStore.openTab("d.md");
+    mod.workspaceStore.openTab("a.md", { forceNew: true });
+    mod.workspaceStore.openTab("b.md", { forceNew: true });
+    mod.workspaceStore.openTab("c.md", { forceNew: true });
+    mod.workspaceStore.openTab("d.md", { forceNew: true });
     const paneId = mod.workspaceStore.activePaneId;
     const tree = mod.workspaceStore.paneTree;
     if (tree.type !== "leaf") throw new Error("expected leaf");
@@ -280,13 +332,13 @@ describe("workspaceStore — closeOtherTabs / closeTabsToRight", () => {
 
     const after = mod.workspaceStore.paneTree;
     if (after.type === "leaf") {
-      expect(after.tabs.map((t) => t.path)).toEqual(["a.md", "b.md"]);
+      expect(after.tabs.map((t) => asFile(t).path)).toEqual(["a.md", "b.md"]);
     }
   });
 
   it("closeTabsToRight with non-existent tabId is a no-op", () => {
-    mod.workspaceStore.openTab("a.md");
-    mod.workspaceStore.openTab("b.md");
+    mod.workspaceStore.openTab("a.md", { forceNew: true });
+    mod.workspaceStore.openTab("b.md", { forceNew: true });
     const paneId = mod.workspaceStore.activePaneId;
     const before = mod.workspaceStore.paneTree;
 
@@ -297,9 +349,9 @@ describe("workspaceStore — closeOtherTabs / closeTabsToRight", () => {
   });
 
   it("closeTabsToRight: if active tab is removed, the kept tab becomes active", () => {
-    mod.workspaceStore.openTab("a.md");
-    mod.workspaceStore.openTab("b.md");
-    mod.workspaceStore.openTab("c.md"); // c is active
+    mod.workspaceStore.openTab("a.md", { forceNew: true });
+    mod.workspaceStore.openTab("b.md", { forceNew: true });
+    mod.workspaceStore.openTab("c.md", { forceNew: true }); // c is active
     const paneId = mod.workspaceStore.activePaneId;
     const tree = mod.workspaceStore.paneTree;
     if (tree.type !== "leaf") throw new Error("expected leaf");
@@ -414,14 +466,14 @@ describe("workspaceStore — renamePath", () => {
   });
 
   it("updates all tabs matching the old path", () => {
-    mod.workspaceStore.openTab("notes/a.md");
-    mod.workspaceStore.openTab("other/doc.md");
+    mod.workspaceStore.openTab("notes/a.md", { forceNew: true });
+    mod.workspaceStore.openTab("other/doc.md", { forceNew: true });
 
     mod.workspaceStore.renamePath("notes/a.md", "notes/b.md");
 
     const tree = mod.workspaceStore.paneTree;
     if (tree.type === "leaf") {
-      expect(tree.tabs.map((t) => t.path)).toEqual(["notes/b.md", "other/doc.md"]);
+      expect(tree.tabs.map((t) => asFile(t).path)).toEqual(["notes/b.md", "other/doc.md"]);
       expect(tree.tabs[0].name).toBe("b.md");
     }
   });
@@ -431,7 +483,7 @@ describe("workspaceStore — renamePath", () => {
     mod.workspaceStore.renamePath("notes/daily", "notes/archive");
     const tree = mod.workspaceStore.paneTree;
     if (tree.type === "leaf") {
-      expect(tree.tabs[0].path).toBe("notes/archive/2026/journal.md");
+      expect(asFile(tree.tabs[0]).path).toBe("notes/archive/2026/journal.md");
     }
   });
 });
@@ -459,7 +511,7 @@ describe("workspaceStore — closeTabsByPath", () => {
 
     for (const leaf of mod.allLeaves(mod.workspaceStore.paneTree)) {
       for (const tab of leaf.tabs) {
-        expect(tab.path).not.toBe("shared.md");
+        if (tab.kind === "file") expect(tab.path).not.toBe("shared.md");
       }
     }
   });
@@ -479,7 +531,7 @@ describe("workspaceStore — closeTabsByPath", () => {
     expect(mod.workspaceStore.paneTree.type).toBe("leaf");
     if (mod.workspaceStore.paneTree.type === "leaf") {
       expect(mod.workspaceStore.paneTree.id).toBe(right);
-      expect(mod.workspaceStore.paneTree.tabs[0].path).toBe("keep.md");
+      expect(asFile(mod.workspaceStore.paneTree.tabs[0]).path).toBe("keep.md");
     }
     expect(mod.workspaceStore.activePaneId).toBe(right);
   });
@@ -500,8 +552,8 @@ describe("workspaceStore — closeTabsByPath", () => {
   });
 
   it("updates activeTabId when the active tab is the one being closed", () => {
-    mod.workspaceStore.openTab("a.md");
-    mod.workspaceStore.openTab("shared.md"); // shared is active (last opened)
+    mod.workspaceStore.openTab("a.md", { forceNew: true });
+    mod.workspaceStore.openTab("shared.md", { forceNew: true }); // shared is active (last opened)
     mod.workspaceStore.closeTabsByPath("shared.md");
     const tree = mod.workspaceStore.paneTree;
     if (tree.type === "leaf") {
@@ -524,16 +576,16 @@ describe("workspaceStore — closeTabsByPathPrefix", () => {
   });
 
   it("closes tabs at and under the prefix, but not sibling directories", () => {
-    mod.workspaceStore.openTab("notes/a.md");
-    mod.workspaceStore.openTab("notes/sub/b.md");
-    mod.workspaceStore.openTab("notes-other/c.md"); // similar prefix but different dir
-    mod.workspaceStore.openTab("root.md");
+    mod.workspaceStore.openTab("notes/a.md", { forceNew: true });
+    mod.workspaceStore.openTab("notes/sub/b.md", { forceNew: true });
+    mod.workspaceStore.openTab("notes-other/c.md", { forceNew: true }); // similar prefix but different dir
+    mod.workspaceStore.openTab("root.md", { forceNew: true });
 
     mod.workspaceStore.closeTabsByPathPrefix("notes");
 
     const tree = mod.workspaceStore.paneTree;
     if (tree.type === "leaf") {
-      const paths = tree.tabs.map((t) => t.path).sort();
+      const paths = tree.tabs.map((t) => asFile(t).path).sort();
       expect(paths).toEqual(["notes-other/c.md", "root.md"]);
     }
   });
@@ -559,7 +611,7 @@ describe("workspaceStore — closeTabsByPathPrefix", () => {
     expect(mod.workspaceStore.paneTree.type).toBe("leaf");
     if (mod.workspaceStore.paneTree.type === "leaf") {
       expect(mod.workspaceStore.paneTree.id).toBe(left);
-      expect(mod.workspaceStore.paneTree.tabs[0].path).toBe("keep.md");
+      expect(asFile(mod.workspaceStore.paneTree.tabs[0]).path).toBe("keep.md");
     }
   });
 });
@@ -643,7 +695,7 @@ describe("workspaceStore — scheduleSave debounce", () => {
       "workspace_save",
       expect.objectContaining({
         state: expect.objectContaining({
-          version: 1,
+          version: 3,
           paneTree: expect.any(Object),
         }),
       }),

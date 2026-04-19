@@ -25,12 +25,15 @@ describe("commandStore", () => {
   it("seeds the core command registry", () => {
     const ids = mod.commandStore.commands.map((cmd) => cmd.id);
 
+    // Sorted alphabetically by label (see sortCommands in commands.svelte.ts).
     expect(ids).toEqual([
-      "panel.backlinks",
-      "panel.files",
-      "panel.search",
-      "panel.unresolved",
-      "sidebar.toggle",
+      "aura.continue", // Continue with Aura
+      "panel.backlinks", // Go to Backlinks panel
+      "panel.files", // Go to Files panel
+      "panel.search", // Go to Search panel
+      "panel.unresolved", // Go to Unresolved Links panel
+      "view.openGraph", // Open graph view
+      "sidebar.toggle", // Toggle Sidebar
     ]);
   });
 

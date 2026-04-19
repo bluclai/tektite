@@ -110,7 +110,9 @@
             filesStore.clearError();
             if (type === 'file') {
                 await filesStore.createFile(relPath);
-                workspaceStore.openTab(relPath);
+                // A freshly-created file is the user's new focus — commit as a
+                // new tab rather than swapping the current one out.
+                workspaceStore.openTab(relPath, { forceNew: true });
             } else {
                 await filesStore.createFolder(relPath);
                 expandDir(relPath);
@@ -144,9 +146,44 @@
     // File actions
     // ---------------------------------------------------------------------------
 
-    function openFile(entry: TreeEntry) {
+    /**
+     * Click / double-click disambiguation:
+     *   - single click (no modifier): β-swap the current tab
+     *   - Cmd/Ctrl + click: append as a new tab
+     *   - double-click: append as a "committed" new tab
+     *
+     * A 220 ms timer defers the single-click swap so the second click of a
+     * dblclick can cancel it. 220 ms is within OS dblclick thresholds.
+     */
+    const DBLCLICK_WINDOW_MS = 220;
+    let pendingOpenTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function cancelPendingOpen() {
+        if (pendingOpenTimer !== null) {
+            clearTimeout(pendingOpenTimer);
+            pendingOpenTimer = null;
+        }
+    }
+
+    function onFileClick(entry: TreeEntry, e: MouseEvent) {
         if (entry.is_dir || !entry.is_markdown) return;
-        workspaceStore.openTab(entry.path);
+        const forceNew = e.metaKey || e.ctrlKey;
+        if (forceNew) {
+            cancelPendingOpen();
+            workspaceStore.openTab(entry.path, { forceNew: true });
+            return;
+        }
+        cancelPendingOpen();
+        pendingOpenTimer = setTimeout(() => {
+            pendingOpenTimer = null;
+            workspaceStore.openTab(entry.path);
+        }, DBLCLICK_WINDOW_MS);
+    }
+
+    function onFileDblClick(entry: TreeEntry) {
+        if (entry.is_dir || !entry.is_markdown) return;
+        cancelPendingOpen();
+        workspaceStore.openTab(entry.path, { forceNew: true });
     }
 
     function canOpen(entry: TreeEntry) {
@@ -299,7 +336,8 @@
                 tabindex="0"
                 class="group relative flex h-[26px] cursor-pointer select-none items-center gap-1.5 rounded-[6px] pr-2 font-sans text-[13px] transition-colors duration-200 ease-out {isActive ? 'text-text-primary' : !isMd ? 'text-text-ghost' : 'text-text-secondary hover:bg-[rgba(255,255,255,0.03)]'}"
                 style="padding-left: {24 + depth * 12}px; {isActive ? 'background: linear-gradient(90deg, rgba(189,194,255,0.08) 0%, rgba(189,194,255,0.02) 100%);' : ''}"
-                onclick={() => openFile(entry)}
+                onclick={(e) => onFileClick(entry, e)}
+                ondblclick={() => onFileDblClick(entry)}
             >
                 {#if isActive}
                     <span
@@ -352,7 +390,8 @@
                                     ? 'text-text-ghost'
                                     : 'text-text-secondary hover:bg-[rgba(255,255,255,0.03)]'}"
                     style="padding-left: {entry.is_dir ? 8 + depth * 12 : 24 + depth * 12}px; {isActive ? 'background: linear-gradient(90deg, rgba(189,194,255,0.08) 0%, rgba(189,194,255,0.02) 100%);' : ''}"
-                    onclick={() => (entry.is_dir ? toggleDir(entry.path) : openFile(entry))}
+                    onclick={(e) => (entry.is_dir ? toggleDir(entry.path) : onFileClick(entry, e))}
+                    ondblclick={() => (entry.is_dir ? undefined : onFileDblClick(entry))}
                     tabindex={openable ? 0 : undefined}
                     role="treeitem"
                     aria-selected={isActive}

@@ -8,7 +8,6 @@
     import BacklinksPanel from '$lib/components/BacklinksPanel.svelte';
     import RelatedNotesPanel from '$lib/components/RelatedNotesPanel.svelte';
     import UnresolvedLinksPanel from '$lib/components/UnresolvedLinksPanel.svelte';
-    import GraphPanel from '$lib/components/GraphPanel.svelte';
     import VaultPopover from '$lib/components/VaultPopover.svelte';
     import * as Popover from '$lib/components/ui/popover/index';
 
@@ -145,8 +144,6 @@
                 <RelatedNotesPanel />
             {:else if workspaceStore.activePanel === 'unresolved'}
                 <UnresolvedLinksPanel />
-            {:else if workspaceStore.activePanel === 'graph'}
-                <GraphPanel />
             {:else}
                 <div class="flex h-full items-center justify-center">
                     <p class="font-sans text-[11px] text-text-ghost">Coming soon</p>

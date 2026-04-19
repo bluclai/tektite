@@ -351,7 +351,7 @@ function wikiLinkAt(state: { doc: { toString: () => string } }, pos: number): Wi
 export type AmbiguousLinkHandler = (target: string, paths: string[]) => void;
 
 /** Callback invoked when a resolved wiki-link is followed. */
-export type FollowLinkHandler = (absolutePath: string) => void;
+export type FollowLinkHandler = (absolutePath: string, opts?: { forceNew?: boolean }) => void;
 
 // We store the callbacks on a `StateField` so the view plugin can access
 // them reactively without closing over stale references.
@@ -450,12 +450,14 @@ const clickHandler = EditorView.domEventHandlers({
     // Prevent CM6 from repositioning the cursor — we're navigating away.
     event.preventDefault();
 
+    const forceNew = event.metaKey || event.ctrlKey;
+
     void invoke<LinkResolutionResult>("index_resolve_link", {
       target: link.target,
       sourcePath: handlers.sourcePath ?? null,
     }).then(async (resolution) => {
       if (resolution.kind === "resolved") {
-        handlers.onFollow(resolution.path);
+        handlers.onFollow(resolution.path, { forceNew });
       } else if (resolution.kind === "ambiguous") {
         handlers.onAmbiguous(link.target, resolution.paths);
       } else {

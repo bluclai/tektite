@@ -57,13 +57,10 @@ function ensureSeeded() {
       action: () => workspaceStore.setActivePanel("unresolved"),
     },
     {
-      id: "panel.graph",
-      label: "Go to Graph panel",
-      category: "Pane",
-      action: () => {
-        workspaceStore.setActivePanel("graph");
-        workspaceStore.openSidebar();
-      },
+      id: "view.openGraph",
+      label: "Open graph view",
+      category: "View",
+      action: () => workspaceStore.openGraphTab(),
     },
     {
       id: "aura.continue",

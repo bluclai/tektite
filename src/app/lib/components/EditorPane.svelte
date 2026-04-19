@@ -91,6 +91,13 @@
     let loadError = $state<string | null>(null);
     let currentContent = $state('');
 
+    // Per-tab dirty flag: mirror local buffer != last persisted content into
+    // the workspace store so β-swap can refuse to overwrite an unsaved tab.
+    $effect(() => {
+        const dirty = currentContent !== lastSavedContent;
+        workspaceStore.setTabDirtyByPath(path, dirty);
+    });
+
     // ---------------------------------------------------------------------------
     // Doc header — derived from frontmatter + filename. Not editable.
     // ---------------------------------------------------------------------------
@@ -546,6 +553,14 @@
                 editorStore.setSaveState('saved', { detail: 'File opened', target: path });
             } catch (error) {
                 loadError = formatCommandError(error, 'Failed to open file.');
+                // Auto-close tabs pointing at files that have been deleted
+                // externally so the user sees an empty pane instead of a
+                // stuck error banner. Other I/O failures still surface.
+                if (/No such file or directory|os error 2/i.test(loadError)) {
+                    workspaceStore.closeTabsByPath(relativePathForCurrentFile());
+                    editorStore.clearStatus();
+                    return;
+                }
                 editorStore.setSaveState('error', { detail: loadError, target: path });
             }
 
@@ -575,11 +590,11 @@
                         wikiLinkExtension({
                             vaultRoot,
                             sourcePath,
-                            onFollow(resolvedPath) {
+                            onFollow(resolvedPath, opts) {
                                 // index_resolve_link returns vault-relative paths.
                                 // Tabs store vault-relative paths; LeafPane prepends
                                 // vaultStore.path to construct absolute paths for EditorPane.
-                                workspaceStore.openTab(resolvedPath);
+                                workspaceStore.openTab(resolvedPath, { forceNew: opts?.forceNew });
                             },
                             onAmbiguous(t, ps) {
                                 ambiguousTarget = t;

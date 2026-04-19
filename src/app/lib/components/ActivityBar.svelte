@@ -5,9 +5,9 @@
         Network,
         Link2,
         Unlink,
-        Share2,
         Settings,
         RefreshCw,
+        Waypoints,
     } from 'lucide-svelte';
     import { workspaceStore, type Panel } from '$lib/stores/workspace.svelte';
     import { indexStatsStore } from '$lib/stores/indexStats.svelte';
@@ -23,7 +23,6 @@
     const topPanels: PanelButton[] = [
         { id: 'files', icon: Files, label: 'Files' },
         { id: 'search', icon: Search, label: 'Search' },
-        { id: 'graph', icon: Share2, label: 'Graph' },
         { id: 'backlinks', icon: Network, label: 'Backlinks' },
         { id: 'related', icon: Link2, label: 'Related' },
         { id: 'unresolved', icon: Unlink, label: 'Unresolved Links' },
@@ -102,6 +101,16 @@
             </button>
         {/each}
     </div>
+
+    <!-- Graph view tab (separate from sidebar panels — opens a main-view tab) -->
+    <button
+        class="mt-1 flex h-9 w-9 items-center justify-center rounded-[8px] border-none bg-transparent text-text-muted transition-colors duration-200 ease-out hover:text-text-secondary"
+        onclick={() => workspaceStore.openGraphTab()}
+        aria-label="Open graph view"
+        title="Open graph view"
+    >
+        <Waypoints size={16} strokeWidth={1.75} />
+    </button>
 
     <!-- Divider -->
     <span

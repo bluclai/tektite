@@ -17,10 +17,11 @@
 
 	let { open = $bindable(), target, paths, onClose }: Props = $props();
 
-	function pick(relPath: string) {
+	function pick(relPath: string, e: MouseEvent | KeyboardEvent) {
 		const vaultRoot = vaultStore.path;
 		const absPath = vaultRoot ? `${vaultRoot}/${relPath}` : relPath;
-		workspaceStore.openTab(absPath);
+		const forceNew = e.metaKey || e.ctrlKey;
+		workspaceStore.openTab(absPath, { forceNew });
 		open = false;
 		onClose?.();
 	}
@@ -71,7 +72,7 @@
 				{#each paths as relPath (relPath)}
 					<button
 						type="button"
-						onclick={() => pick(relPath)}
+						onclick={(e) => pick(relPath, e)}
 						class="w-full border-none bg-transparent px-5 py-2.5 text-left hover:bg-surface-container-low focus:bg-surface-container-low focus:outline-none"
 					>
 						<div class="text-sm font-medium text-primary">{displayName(relPath)}</div>
