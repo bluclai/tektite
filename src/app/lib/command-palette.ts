@@ -1,12 +1,6 @@
 import type { CommandAction } from "$lib/stores/commands.svelte";
 
-export type PaletteMode =
-  | "files"
-  | "commands"
-  | "headings"
-  | "tags"
-  | "templates"
-  | "semantic";
+export type PaletteMode = "files" | "commands" | "headings" | "tags" | "templates" | "semantic";
 
 const PREFIX_TO_MODE: Record<string, PaletteMode> = {
   ">": "commands",

@@ -35,7 +35,7 @@
 		const activeLeaf = leaves.find((l) => l.id === workspaceStore.activePaneId);
 		if (!activeLeaf || !activeLeaf.activeTabId) return null;
 		const tab = activeLeaf.tabs.find((t) => t.id === activeLeaf.activeTabId);
-		if (!tab) return null;
+		if (!tab || tab.kind !== 'file') return null;
 
 		// Tabs store absolute paths; strip vault root to get vault-relative path.
 		const vaultRoot = vaultStore.path;

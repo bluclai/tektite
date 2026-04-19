@@ -13,7 +13,7 @@
     let { tab }: Props = $props();
 
     const segments = $derived.by<{ folders: string[]; file: string } | null>(() => {
-        if (!tab) return null;
+        if (!tab || tab.kind !== 'file') return null;
         const vaultRoot = vaultStore.path ?? '';
         let rel = tab.path;
         if (vaultRoot && rel.startsWith(vaultRoot + '/')) {
@@ -25,8 +25,13 @@
         return { folders: parts.slice(0, -1), file };
     });
 
+    const viewTitle = $derived.by(() => {
+        if (!tab || tab.kind !== 'view') return null;
+        return tab.name;
+    });
+
     const statusChip = $derived.by(() => {
-        if (!tab) return null;
+        if (!tab || tab.kind !== 'file') return null;
         const vaultRoot = vaultStore.path ?? '';
         const rel = vaultRoot && tab.path.startsWith(vaultRoot + '/')
             ? tab.path.slice(vaultRoot.length + 1)
@@ -61,7 +66,7 @@
     class="flex h-10 shrink-0 select-none items-center gap-3 px-5"
     style="background-color: var(--color-surface);"
 >
-    <!-- Breadcrumb -->
+    <!-- Breadcrumb (file tabs) or view title (view tabs) -->
     {#if segments}
         <nav class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[12px] font-sans">
             {#each segments.folders as folder, i (i)}
@@ -70,6 +75,10 @@
             {/each}
             <span class="truncate" style="color: var(--color-text-secondary);">{segments.file}</span>
         </nav>
+    {:else if viewTitle}
+        <div class="flex min-w-0 flex-1 items-center text-[12px] font-sans">
+            <span class="truncate" style="color: var(--color-text-secondary);">{viewTitle}</span>
+        </div>
     {:else}
         <div class="flex-1"></div>
     {/if}

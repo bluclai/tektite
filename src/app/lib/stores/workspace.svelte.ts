@@ -5,10 +5,11 @@ import {
   type LeafPane,
   type SplitPane,
   type PaneLayout,
+  type ViewKind,
   nameFromPath,
-  makeTab,
   makeLeaf,
   leafOpenTab,
+  leafOpenViewTab,
   leafSwapActiveTab,
   leafSetTabDirty,
   leafCloseTab,
@@ -30,14 +31,7 @@ export { allLeaves };
 // Panel (sidebar)
 // ---------------------------------------------------------------------------
 
-export type Panel =
-  | "files"
-  | "search"
-  | "backlinks"
-  | "related"
-  | "unresolved"
-  | "graph"
-  | "settings";
+export type Panel = "files" | "search" | "backlinks" | "related" | "unresolved" | "settings";
 
 // ---------------------------------------------------------------------------
 // Workspace persistence shape (version-guarded)
@@ -53,7 +47,7 @@ export interface WorkspaceState {
   focusMode?: boolean;
 }
 
-const WORKSPACE_VERSION = 2;
+const WORKSPACE_VERSION = 3;
 const SIDEBAR_DEFAULT_WIDTH = 240;
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 480;
@@ -77,7 +71,9 @@ let _focusMode = $state<boolean>(false);
 const _activeFilePath = $derived.by<string | null>(() => {
   const leaf = allLeaves(_paneTree).find((l) => l.id === _activePaneId) ?? null;
   if (!leaf || !leaf.activeTabId) return null;
-  return leaf.tabs.find((t) => t.id === leaf.activeTabId)?.path ?? null;
+  const tab = leaf.tabs.find((t) => t.id === leaf.activeTabId);
+  if (!tab || tab.kind !== "file") return null;
+  return tab.path;
 });
 
 // ---------------------------------------------------------------------------
@@ -195,6 +191,21 @@ export const workspaceStore = {
     scheduleSave();
   },
 
+  /**
+   * Open (or focus) a singleton view tab in the active pane. View tabs never
+   * β-swap — if one of the same kind exists in the pane, it's activated in
+   * place; otherwise a new view tab is appended.
+   */
+  openViewTab(view: ViewKind, name: string) {
+    _paneTree = mapLeaf(_paneTree, _activePaneId, (p) => leafOpenViewTab(p, view, name));
+    scheduleSave();
+  },
+
+  /** Convenience for the whole-vault graph view. */
+  openGraphTab() {
+    this.openViewTab("graph", "Graph");
+  },
+
   /** Open a tab in a specific pane by ID. */
   openTabInPane(paneId: string, path: string, opts?: { forceNew?: boolean }) {
     const forceNew = opts?.forceNew ?? false;
@@ -218,7 +229,7 @@ export const workspaceStore = {
   /** Set dirty by path across the active pane. Convenience for editor wiring. */
   setTabDirtyByPath(path: string, dirty: boolean) {
     for (const leaf of allLeaves(_paneTree)) {
-      const tab = leaf.tabs.find((t) => t.path === path);
+      const tab = leaf.tabs.find((t) => t.kind === "file" && t.path === path);
       if (tab) {
         _paneTree = mapLeaf(_paneTree, leaf.id, (p) => leafSetTabDirty(p, tab.id, dirty));
       }
@@ -309,7 +320,7 @@ export const workspaceStore = {
   /** Close all tabs across all panes that match a given path. */
   closeTabsByPath(path: string) {
     function closeInLeaf(leaf: LeafPane): LeafPane {
-      const tabs = leaf.tabs.filter((t) => t.path !== path);
+      const tabs = leaf.tabs.filter((t) => !(t.kind === "file" && t.path === path));
       const activeStillOpen = tabs.some((t) => t.id === leaf.activeTabId);
       const fallbackTab = tabs[tabs.length - 1] ?? null;
       return {
@@ -352,10 +363,54 @@ export const workspaceStore = {
     scheduleSave();
   },
 
+  /**
+   * Drop file tabs whose path is not in the given set. View tabs (graph,
+   * etc.) are always kept. Used after vault open to purge tabs that
+   * persisted state points at but which no longer exist on disk.
+   */
+  pruneMissingFileTabs(knownPaths: Set<string>) {
+    function closeInLeaf(leaf: LeafPane): LeafPane {
+      const tabs = leaf.tabs.filter((t) => t.kind !== "file" || knownPaths.has(t.path));
+      if (tabs.length === leaf.tabs.length) return leaf;
+      const activeStillOpen = tabs.some((t) => t.id === leaf.activeTabId);
+      const fallbackTab = tabs[tabs.length - 1] ?? null;
+      return {
+        ...leaf,
+        tabs,
+        activeTabId: activeStillOpen ? leaf.activeTabId : (fallbackTab?.id ?? null),
+      };
+    }
+
+    let changedAny = false;
+    for (const leaf of allLeaves(_paneTree)) {
+      const updated = closeInLeaf(leaf);
+      if (updated !== leaf) {
+        _paneTree = mapLeaf(_paneTree, leaf.id, () => updated);
+        changedAny = true;
+      }
+    }
+    if (!changedAny) return;
+
+    let pruned: PaneLayout = _paneTree;
+    for (const leaf of allLeaves(pruned)) {
+      if (leaf.tabs.length === 0 && pruned.type === "split") {
+        const result = removePane(pruned, leaf.id);
+        if (result !== null) pruned = result;
+      }
+    }
+    _paneTree = pruned;
+    if (!allLeaves(_paneTree).some((l) => l.id === _activePaneId)) {
+      _activePaneId = firstLeafId(_paneTree);
+    }
+    scheduleSave();
+  },
+
   /** Close all tabs whose path starts with a given prefix (for folder deletion). */
   closeTabsByPathPrefix(prefix: string) {
     function closeInLeaf(leaf: LeafPane): LeafPane {
-      const tabs = leaf.tabs.filter((t) => t.path !== prefix && !t.path.startsWith(prefix + "/"));
+      const tabs = leaf.tabs.filter(
+        (t) => t.kind !== "file" || (t.path !== prefix && !t.path.startsWith(prefix + "/")),
+      );
       const activeStillOpen = tabs.some((t) => t.id === leaf.activeTabId);
       const fallbackTab = tabs[tabs.length - 1] ?? null;
       return {
@@ -394,6 +449,18 @@ export const workspaceStore = {
     scheduleSave();
   },
 
+  /**
+   * Close every tab across every pane and collapse the pane tree back to a
+   * single empty leaf. Used when switching vaults — tabs hold paths relative
+   * to the old vault and would be invalid against the new one.
+   */
+  resetPanes() {
+    const leaf = makeLeaf();
+    _paneTree = leaf;
+    _activePaneId = leaf.id;
+    scheduleSave();
+  },
+
   // --- Boot ---
   async load() {
     try {
@@ -401,10 +468,12 @@ export const workspaceStore = {
       if (!raw) return;
 
       // Forward-compat: future versions should win silently rather than
-      // being mangled by an older migration. Only v1 and v2 are handled.
-      if (raw.version !== 1 && raw.version !== WORKSPACE_VERSION) return;
+      // being mangled by an older migration. Only v1–v3 are handled.
+      if (raw.version !== 1 && raw.version !== 2 && raw.version !== WORKSPACE_VERSION) return;
 
-      _activePanel = raw.activePanel ?? "files";
+      // `graph` sidebar panel retired — migrate stale state to `files`.
+      const legacyPanel = raw.activePanel as string | undefined;
+      _activePanel = legacyPanel === "graph" || !legacyPanel ? "files" : (legacyPanel as Panel);
       _sidebarOpen = raw.sidebarOpen ?? true;
       _sidebarWidth = Math.min(
         SIDEBAR_MAX_WIDTH,
@@ -412,13 +481,16 @@ export const workspaceStore = {
       );
       _focusMode = raw.focusMode ?? false;
       if (raw.paneTree) {
+        // v1 → v2: stamp kind="file" on every tab.
+        // v2 → v3: structurally compatible (v3 only *permits* view tabs; v2
+        // state never has them) so no transform needed.
         _paneTree = raw.version === 1 ? migrateTreeV1ToV2(raw.paneTree) : raw.paneTree;
         const leaves = allLeaves(_paneTree);
         const activeExists = leaves.some((l) => l.id === raw.activePaneId);
         _activePaneId = activeExists ? raw.activePaneId : firstLeafId(_paneTree);
       }
 
-      if (raw.version === 1) scheduleSave(); // persist the migrated shape
+      if (raw.version !== WORKSPACE_VERSION) scheduleSave(); // persist the migrated shape
     } catch {
       // Missing or corrupt workspace.json — use defaults silently
     }
@@ -427,26 +499,40 @@ export const workspaceStore = {
 
 /**
  * Migrate v1 tabs (no `kind`) to v2 by stamping every tab with `kind: 'file'`.
- * Dirty is left undefined so existing state doesn't pretend to be mid-edit.
+ * Input is the persisted v1 shape, so we type it as unknown and rebuild.
  */
-function migrateTreeV1ToV2(layout: PaneLayout): PaneLayout {
-  if (layout.type === "leaf") {
-    const tabs = layout.tabs.map((t) => {
-      // Tab was persisted before kind existed; coerce to file kind.
-      // Drop any unknown fields defensively.
-      return {
-        id: t.id,
-        path: t.path,
-        name: t.name ?? nameFromPath(t.path),
-        kind: "file" as const,
-      };
-    });
-    return { ...layout, tabs };
+function migrateTreeV1ToV2(layout: unknown): PaneLayout {
+  const node = layout as { type: string } & Record<string, unknown>;
+  if (node.type === "leaf") {
+    const leaf = node as unknown as {
+      type: "leaf";
+      id: string;
+      tabs: Array<{ id: string; path: string; name?: string }>;
+      activeTabId: string | null;
+    };
+    const tabs: PaneTab[] = leaf.tabs.map((t) => ({
+      kind: "file" as const,
+      id: t.id,
+      path: t.path,
+      name: t.name ?? nameFromPath(t.path),
+    }));
+    return { type: "leaf", id: leaf.id, tabs, activeTabId: leaf.activeTabId };
   }
+  const split = node as unknown as {
+    type: "split";
+    id: string;
+    direction: "horizontal" | "vertical";
+    a: unknown;
+    b: unknown;
+    sizes: [number, number];
+  };
   return {
-    ...layout,
-    a: migrateTreeV1ToV2(layout.a),
-    b: migrateTreeV1ToV2(layout.b),
+    type: "split",
+    id: split.id,
+    direction: split.direction,
+    a: migrateTreeV1ToV2(split.a),
+    b: migrateTreeV1ToV2(split.b),
+    sizes: split.sizes,
   };
 }
 

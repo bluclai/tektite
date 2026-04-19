@@ -38,7 +38,7 @@
 		const activeLeaf = leaves.find((l) => l.id === workspaceStore.activePaneId);
 		if (!activeLeaf || !activeLeaf.activeTabId) return null;
 		const tab = activeLeaf.tabs.find((t) => t.id === activeLeaf.activeTabId);
-		if (!tab) return null;
+		if (!tab || tab.kind !== 'file') return null;
 
 		const vaultRoot = vaultStore.path;
 		if (vaultRoot && tab.path.startsWith(vaultRoot + '/')) {

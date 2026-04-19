@@ -42,6 +42,11 @@ pub struct GraphNode {
     pub modified: i64,
     /// Total links touching this note (outgoing + resolved incoming).
     pub link_count: u32,
+    /// True when the note has at least one stored chunk embedding —
+    /// lets the frontend surface progressive embedding state without
+    /// a second query.
+    #[serde(default)]
+    pub has_embedding: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,7 +273,8 @@ impl Index {
                     COALESCE(NULLIF(fts.title, ''), f.path) AS title,
                     (SELECT COUNT(*) FROM links l
                        WHERE l.source_id = f.id
-                          OR l.resolved_target_id = f.id) AS link_count
+                          OR l.resolved_target_id = f.id) AS link_count,
+                    EXISTS(SELECT 1 FROM chunks c WHERE c.file_id = f.id) AS has_embedding
              FROM files f
              LEFT JOIN fts ON fts.path = f.path
              WHERE f.id IN ({placeholders})"
@@ -276,6 +282,7 @@ impl Index {
         let mut stmt = self.conn.prepare(&file_sql)?;
         let rows = stmt.query_map(sql_params.as_slice(), |row| {
             let link_count: i64 = row.get(4)?;
+            let has_embedding: i64 = row.get(5)?;
             Ok(GraphNode {
                 id: row.get(0)?,
                 path: row.get(1)?,
@@ -283,6 +290,7 @@ impl Index {
                 title: row.get(3)?,
                 tags: Vec::new(),
                 link_count: link_count.max(0) as u32,
+                has_embedding: has_embedding != 0,
             })
         })?;
         let mut map: HashMap<NoteId, GraphNode> = HashMap::new();
@@ -310,5 +318,77 @@ impl Index {
         }
 
         Ok(map)
+    }
+
+    /// Returns every indexed markdown note plus the resolved wiki-link edges
+    /// between them. Filters are applied to nodes; edges whose endpoints are
+    /// filtered out are dropped.
+    ///
+    /// This is the whole-vault data source for the main-view graph tab. It
+    /// intentionally returns no semantic edges — those arrive via
+    /// [`EmbedService`]'s mutual-kNN command so progress can be surfaced
+    /// independently.
+    pub fn full_vault(&self, filters: &GraphFilters) -> Result<GraphData, IndexError> {
+        let mut visited: HashSet<NoteId> = HashSet::new();
+        {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id FROM files WHERE LOWER(path) LIKE '%.md'")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                let id = row?;
+                if self.node_passes_filter(&id, filters)? {
+                    visited.insert(id);
+                }
+            }
+        }
+
+        if visited.is_empty() {
+            return Ok(GraphData {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+            });
+        }
+
+        let node_map = self.graph_node_metadata(&visited)?;
+
+        let mut edge_set: HashSet<(NoteId, NoteId)> = HashSet::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT source_id, resolved_target_id FROM links
+                 WHERE resolved_target_id IS NOT NULL",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (source, target) = row?;
+                if source == target {
+                    continue;
+                }
+                if !node_map.contains_key(&source) || !node_map.contains_key(&target) {
+                    continue;
+                }
+                edge_set.insert((source, target));
+            }
+        }
+
+        let mut edges: Vec<GraphEdge> = edge_set
+            .into_iter()
+            .map(|(source, target)| GraphEdge {
+                source,
+                target,
+                kind: "link".to_string(),
+                score: None,
+            })
+            .collect();
+        edges.sort_by(|a, b| {
+            (a.source.as_str(), a.target.as_str()).cmp(&(b.source.as_str(), b.target.as_str()))
+        });
+
+        let mut nodes: Vec<GraphNode> = node_map.into_values().collect();
+        nodes.sort_by(|a, b| a.path.cmp(&b.path));
+
+        Ok(GraphData { nodes, edges })
     }
 }

@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
+import type { PaneTab } from "../stores/workspace-tree";
+
 // Hoisted mock survives vi.resetModules() because the factory captures it.
 const invokeMock = vi.hoisted(() => vi.fn());
 
@@ -8,6 +10,16 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 type WorkspaceModule = typeof import("../stores/workspace.svelte");
+
+/**
+ * Narrow a tab to its file-kind form. All tabs in this test file are opened
+ * via `openTab(path)`, which produces file tabs — so the cast is safe and
+ * keeps assertions readable despite the discriminated union.
+ */
+function asFile(tab: PaneTab): { id: string; path: string; name: string } {
+  if (tab.kind !== "file") throw new Error(`expected file tab, got ${tab.kind}`);
+  return tab;
+}
 
 /**
  * Re-import the store with a fresh module state. The store is a module-level
@@ -115,7 +127,7 @@ describe("workspaceStore — pane tree basics", () => {
     const tree = mod.workspaceStore.paneTree;
     if (tree.type !== "leaf") throw new Error("expected leaf");
     expect(tree.tabs).toHaveLength(1);
-    expect(tree.tabs[0].path).toBe("a.md");
+    expect(asFile(tree.tabs[0]).path).toBe("a.md");
     expect(tree.activeTabId).toBe(tree.tabs[0].id);
   });
 
@@ -144,7 +156,7 @@ describe("workspaceStore — pane tree basics", () => {
     if (tree.type !== "leaf") throw new Error("expected leaf");
     expect(tree.tabs).toHaveLength(1);
     expect(tree.tabs[0].id).toBe(firstTabId); // same tab, swapped content
-    expect(tree.tabs[0].path).toBe("b.md");
+    expect(asFile(tree.tabs[0]).path).toBe("b.md");
   });
 
   it("openTab forceNew appends instead of swapping", () => {
@@ -153,7 +165,7 @@ describe("workspaceStore — pane tree basics", () => {
     const tree = mod.workspaceStore.paneTree;
     if (tree.type !== "leaf") throw new Error("expected leaf");
     expect(tree.tabs).toHaveLength(2);
-    expect(tree.tabs.map((t) => t.path)).toEqual(["a.md", "b.md"]);
+    expect(tree.tabs.map((t) => asFile(t).path)).toEqual(["a.md", "b.md"]);
   });
 
   it("openTab on a dirty tab falls back to append (dirty-sticky safety)", () => {
@@ -166,7 +178,7 @@ describe("workspaceStore — pane tree basics", () => {
 
     const after = mod.workspaceStore.paneTree;
     if (after.type !== "leaf") throw new Error("expected leaf");
-    expect(after.tabs.map((t) => t.path)).toEqual(["a.md", "b.md"]);
+    expect(after.tabs.map((t) => asFile(t).path)).toEqual(["a.md", "b.md"]);
   });
 
   it("openTabInPane targets a specific pane and makes it active", () => {
@@ -256,7 +268,7 @@ describe("workspaceStore — closeTab collapse", () => {
     expect(after.type).toBe("leaf");
     if (after.type === "leaf") {
       expect(after.tabs).toHaveLength(1);
-      expect(after.tabs[0].path).toBe("b.md");
+      expect(asFile(after.tabs[0]).path).toBe("b.md");
     }
   });
 
@@ -301,7 +313,7 @@ describe("workspaceStore — closeOtherTabs / closeTabsToRight", () => {
     const after = mod.workspaceStore.paneTree;
     if (after.type === "leaf") {
       expect(after.tabs).toHaveLength(1);
-      expect(after.tabs[0].path).toBe("b.md");
+      expect(asFile(after.tabs[0]).path).toBe("b.md");
       expect(after.activeTabId).toBe(keepId);
     }
   });
@@ -320,7 +332,7 @@ describe("workspaceStore — closeOtherTabs / closeTabsToRight", () => {
 
     const after = mod.workspaceStore.paneTree;
     if (after.type === "leaf") {
-      expect(after.tabs.map((t) => t.path)).toEqual(["a.md", "b.md"]);
+      expect(after.tabs.map((t) => asFile(t).path)).toEqual(["a.md", "b.md"]);
     }
   });
 
@@ -461,7 +473,7 @@ describe("workspaceStore — renamePath", () => {
 
     const tree = mod.workspaceStore.paneTree;
     if (tree.type === "leaf") {
-      expect(tree.tabs.map((t) => t.path)).toEqual(["notes/b.md", "other/doc.md"]);
+      expect(tree.tabs.map((t) => asFile(t).path)).toEqual(["notes/b.md", "other/doc.md"]);
       expect(tree.tabs[0].name).toBe("b.md");
     }
   });
@@ -471,7 +483,7 @@ describe("workspaceStore — renamePath", () => {
     mod.workspaceStore.renamePath("notes/daily", "notes/archive");
     const tree = mod.workspaceStore.paneTree;
     if (tree.type === "leaf") {
-      expect(tree.tabs[0].path).toBe("notes/archive/2026/journal.md");
+      expect(asFile(tree.tabs[0]).path).toBe("notes/archive/2026/journal.md");
     }
   });
 });
@@ -499,7 +511,7 @@ describe("workspaceStore — closeTabsByPath", () => {
 
     for (const leaf of mod.allLeaves(mod.workspaceStore.paneTree)) {
       for (const tab of leaf.tabs) {
-        expect(tab.path).not.toBe("shared.md");
+        if (tab.kind === "file") expect(tab.path).not.toBe("shared.md");
       }
     }
   });
@@ -519,7 +531,7 @@ describe("workspaceStore — closeTabsByPath", () => {
     expect(mod.workspaceStore.paneTree.type).toBe("leaf");
     if (mod.workspaceStore.paneTree.type === "leaf") {
       expect(mod.workspaceStore.paneTree.id).toBe(right);
-      expect(mod.workspaceStore.paneTree.tabs[0].path).toBe("keep.md");
+      expect(asFile(mod.workspaceStore.paneTree.tabs[0]).path).toBe("keep.md");
     }
     expect(mod.workspaceStore.activePaneId).toBe(right);
   });
@@ -573,7 +585,7 @@ describe("workspaceStore — closeTabsByPathPrefix", () => {
 
     const tree = mod.workspaceStore.paneTree;
     if (tree.type === "leaf") {
-      const paths = tree.tabs.map((t) => t.path).sort();
+      const paths = tree.tabs.map((t) => asFile(t).path).sort();
       expect(paths).toEqual(["notes-other/c.md", "root.md"]);
     }
   });
@@ -599,7 +611,7 @@ describe("workspaceStore — closeTabsByPathPrefix", () => {
     expect(mod.workspaceStore.paneTree.type).toBe("leaf");
     if (mod.workspaceStore.paneTree.type === "leaf") {
       expect(mod.workspaceStore.paneTree.id).toBe(left);
-      expect(mod.workspaceStore.paneTree.tabs[0].path).toBe("keep.md");
+      expect(asFile(mod.workspaceStore.paneTree.tabs[0]).path).toBe("keep.md");
     }
   });
 });
@@ -683,7 +695,7 @@ describe("workspaceStore — scheduleSave debounce", () => {
       "workspace_save",
       expect.objectContaining({
         state: expect.objectContaining({
-          version: 2,
+          version: 3,
           paneTree: expect.any(Object),
         }),
       }),

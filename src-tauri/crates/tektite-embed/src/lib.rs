@@ -16,6 +16,7 @@
 pub mod cache;
 pub mod chunker;
 pub mod embedder;
+pub mod mutual_knn;
 pub mod onnx;
 pub mod queue;
 pub mod store;
@@ -28,6 +29,9 @@ use thiserror::Error;
 pub use cache::{Cache, CacheEntry};
 pub use chunker::{chunk_note, Chunk};
 pub use embedder::{Embedder, FakeEmbedder};
+pub use mutual_knn::{
+    compute_mutual_knn, KnnProgress, MutualKnnEdge, MutualKnnOptions,
+};
 pub use onnx::OnnxEmbedder;
 pub use queue::{EmbedJob, EmbedProgress, EmbedQueue, Priority};
 pub use store::{ChunkMetadata, ChunkRecord, Store};
@@ -449,16 +453,19 @@ impl EmbedService {
         }
     }
 
-    /// Test-only accessor.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn store(&self) -> &Store {
-        &self.store
+    /// Returns a reference to the in-memory vector cache.
+    ///
+    /// Used by callers that need to run whole-corpus scans over current
+    /// embeddings (e.g. the mutual-kNN graph computation) without going
+    /// through the search surfaces.
+    pub fn cache(&self) -> &Cache {
+        &self.cache
     }
 
     /// Test-only accessor.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn cache(&self) -> &Cache {
-        &self.cache
+    pub fn store(&self) -> &Store {
+        &self.store
     }
 }
 

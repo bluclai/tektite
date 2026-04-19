@@ -9,6 +9,8 @@
 //! only write during `reindex_file` / `forget_file`, both of which are
 //! already rare (edit, save, rename).
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::{Store, Vector};
@@ -32,6 +34,10 @@ pub struct CacheEntry {
 #[derive(Clone, Default)]
 pub struct Cache {
     entries: Arc<RwLock<Vec<CacheEntry>>>,
+    /// Monotonically incremented on every mutation. Consumers can use this
+    /// as a cache-invalidation key for derived state (e.g. the mutual-kNN
+    /// graph edges) without tracking individual file events.
+    version: Arc<AtomicU64>,
 }
 
 impl Cache {
@@ -53,6 +59,7 @@ impl Cache {
                 vector: Arc::new(vector),
             });
         }
+        self.bump_version();
         Ok(())
     }
 
@@ -62,12 +69,58 @@ impl Cache {
         let mut guard = self.entries.write().expect("cache write poisoned");
         guard.retain(|e| e.file_id != file_id);
         guard.extend(new_entries);
+        drop(guard);
+        self.bump_version();
     }
 
     /// Drop every entry owned by `file_id`.
     pub fn remove_for_file(&self, file_id: &str) {
         let mut guard = self.entries.write().expect("cache write poisoned");
         guard.retain(|e| e.file_id != file_id);
+        drop(guard);
+        self.bump_version();
+    }
+
+    /// Current monotonic mutation counter. Starts at zero for a fresh cache.
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::Acquire)
+    }
+
+    fn bump_version(&self) {
+        self.version.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Returns one L2-normalised centroid per file_id currently in the cache.
+    /// Files with no entries are simply absent from the result. The centroid
+    /// is the mean of all chunk vectors for that file, then renormalised.
+    pub fn all_file_centroids(&self) -> Vec<(String, Vector)> {
+        let guard = self.entries.read().expect("cache read poisoned");
+        let mut buckets: HashMap<String, (u32, Vector)> = HashMap::new();
+        for e in guard.iter() {
+            let slot = buckets
+                .entry(e.file_id.clone())
+                .or_insert_with(|| (0, [0f32; crate::EMBED_DIM]));
+            slot.0 += 1;
+            for (i, x) in e.vector.iter().enumerate() {
+                slot.1[i] += *x;
+            }
+        }
+        buckets
+            .into_iter()
+            .map(|(id, (n, mut sum))| {
+                let inv = 1.0 / n as f32;
+                for x in sum.iter_mut() {
+                    *x *= inv;
+                }
+                let norm: f32 = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm > 0.0 {
+                    for x in sum.iter_mut() {
+                        *x /= norm;
+                    }
+                }
+                (id, sum)
+            })
+            .collect()
     }
 
     /// Returns the top `k` most-similar `(chunk_id, similarity)` pairs.

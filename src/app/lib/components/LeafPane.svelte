@@ -6,6 +6,7 @@
 	import PaneHeader from '$lib/components/PaneHeader.svelte';
 	import EmptyPane from '$lib/components/EmptyPane.svelte';
 	import EditorPane from '$lib/components/EditorPane.svelte';
+	import GraphView from '$lib/components/GraphView.svelte';
 
 	interface Props {
 		pane: LeafPane;
@@ -18,7 +19,7 @@
 	const activeTab = $derived(pane.tabs.find((t) => t.id === pane.activeTabId) ?? null);
 
 	const absolutePath = $derived.by(() => {
-		if (!activeTab) return null;
+		if (!activeTab || activeTab.kind !== 'file') return null;
 
 		const tabPath = activeTab.path;
 		const vaultRoot = vaultStore.path;
@@ -74,9 +75,13 @@
 	{/if}
 
 	<div class="flex-1 overflow-hidden">
-		{#if absolutePath === null}
+		{#if !activeTab}
 			<EmptyPane />
-		{:else}
+		{:else if activeTab.kind === 'view' && activeTab.view === 'graph'}
+			{#key activeTab.id}
+				<GraphView paneVisible={isActive || pane.activeTabId === activeTab.id} />
+			{/key}
+		{:else if absolutePath !== null}
 			<!--
 				Key on the tab ID so EditorPane is destroyed + recreated on tab switch
 				giving each tab its own CM6 EditorView and independent undo history.
@@ -84,6 +89,8 @@
 			{#key pane.activeTabId ?? 'none'}
 				<EditorPane path={absolutePath} />
 			{/key}
+		{:else}
+			<EmptyPane />
 		{/if}
 	</div>
 </div>

@@ -10,17 +10,20 @@
 // Pane types
 // ---------------------------------------------------------------------------
 
-export interface PaneTab {
-  id: string;
-  path: string;
-  /** Filename extracted from path for display */
-  name: string;
-  /**
-   * Discriminator — Phase 1 only uses `'file'`. Phase 2 extends to
-   * `'view'` (graph view, etc.) for non-file tabs that should never
-   * be the target of a swap.
-   */
+/**
+ * Non-file view tabs. Phase 2 introduces `'graph'` for the whole-vault
+ * graph surface. View tabs are singleton per `ViewKind` inside a pane tree
+ * (focus-if-open semantics) and are never the target of a β-swap.
+ */
+export type ViewKind = "graph";
+
+export interface FilePaneTab {
   kind: "file";
+  id: string;
+  /** Vault-relative path of the open file. */
+  path: string;
+  /** Filename extracted from path for display. */
+  name: string;
   /**
    * True while the tab has unsaved edits. Controls whether the tab is
    * eligible for β-swap: dirty tabs never get their path mutated out from
@@ -28,6 +31,16 @@ export interface PaneTab {
    */
   dirty?: boolean;
 }
+
+export interface ViewPaneTab {
+  kind: "view";
+  id: string;
+  view: ViewKind;
+  /** Display label shown in the tab bar. */
+  name: string;
+}
+
+export type PaneTab = FilePaneTab | ViewPaneTab;
 
 export interface LeafPane {
   type: "leaf";
@@ -58,14 +71,18 @@ export function nameFromPath(path: string): string {
   return path.slice(lastSlash + 1);
 }
 
-export function makeTab(path: string): PaneTab {
+export function makeTab(path: string): FilePaneTab {
   return { id: crypto.randomUUID(), path, name: nameFromPath(path), kind: "file" };
+}
+
+export function makeViewTab(view: ViewKind, name: string): ViewPaneTab {
+  return { kind: "view", id: crypto.randomUUID(), view, name };
 }
 
 /**
  * A tab is swappable when its content can be replaced in-place without
- * losing user work. Phase 1: swappable iff not dirty (view-kind tabs land
- * in Phase 2 and will also be rejected).
+ * losing user work: a clean file tab. Dirty file tabs and view tabs are
+ * always ineligible.
  */
 export function isSwappable(tab: PaneTab): boolean {
   return tab.kind === "file" && !tab.dirty;
@@ -80,9 +97,21 @@ export function makeLeaf(): LeafPane {
 // ---------------------------------------------------------------------------
 
 export function leafOpenTab(pane: LeafPane, path: string): LeafPane {
-  const existing = pane.tabs.find((t) => t.path === path);
+  const existing = pane.tabs.find((t) => t.kind === "file" && t.path === path);
   if (existing) return { ...pane, activeTabId: existing.id };
   const tab = makeTab(path);
+  return { ...pane, tabs: [...pane.tabs, tab], activeTabId: tab.id };
+}
+
+/**
+ * Opens a singleton view tab. If a tab of the same `view` kind already
+ * exists in the pane, it's activated in place; otherwise a new view tab is
+ * appended. View tabs never swap, even if the current tab is swappable.
+ */
+export function leafOpenViewTab(pane: LeafPane, view: ViewKind, name: string): LeafPane {
+  const existing = pane.tabs.find((t) => t.kind === "view" && t.view === view);
+  if (existing) return { ...pane, activeTabId: existing.id };
+  const tab = makeViewTab(view, name);
   return { ...pane, tabs: [...pane.tabs, tab], activeTabId: tab.id };
 }
 
@@ -103,16 +132,17 @@ export function leafActivateTab(pane: LeafPane, tabId: string): LeafPane {
 }
 
 /**
- * β plain-swap: if the active tab is swappable, replace its path+name in
- * place; otherwise fall back to appending a new tab. If the path is already
- * open as any tab in the pane, just activate that tab (dedupe).
+ * β plain-swap: if the active tab is swappable (clean file tab), replace
+ * its path+name in place; otherwise fall back to appending a new tab. If
+ * the path is already open as any file tab in the pane, just activate that
+ * tab (dedupe). View tabs never swap and aren't matched during dedup.
  */
 export function leafSwapActiveTab(pane: LeafPane, path: string): LeafPane {
-  const existing = pane.tabs.find((t) => t.path === path);
+  const existing = pane.tabs.find((t) => t.kind === "file" && t.path === path);
   if (existing) return { ...pane, activeTabId: existing.id };
 
   const active = pane.tabs.find((t) => t.id === pane.activeTabId) ?? null;
-  if (!active || !isSwappable(active)) {
+  if (!active || !isSwappable(active) || active.kind !== "file") {
     return leafOpenTab(pane, path);
   }
 
@@ -122,11 +152,12 @@ export function leafSwapActiveTab(pane: LeafPane, path: string): LeafPane {
   return { ...pane, tabs };
 }
 
-/** Set the dirty flag on a specific tab. */
+/** Set the dirty flag on a specific file tab. No-op for view tabs. */
 export function leafSetTabDirty(pane: LeafPane, tabId: string, dirty: boolean): LeafPane {
   const idx = pane.tabs.findIndex((t) => t.id === tabId);
   if (idx === -1) return pane;
   const tab = pane.tabs[idx];
+  if (tab.kind !== "file") return pane;
   const currentDirty = tab.dirty ?? false;
   if (currentDirty === dirty) return pane;
   const tabs = pane.tabs.slice();
@@ -243,7 +274,8 @@ export function renamePathsInTree(
 ): PaneLayout {
   if (layout.type === "leaf") {
     let changed = false;
-    const tabs = layout.tabs.map((tab) => {
+    const tabs: PaneTab[] = layout.tabs.map((tab) => {
+      if (tab.kind !== "file") return tab;
       const nextPath = renamePathValue(tab.path, oldPath, newPath);
       if (nextPath === tab.path) {
         return tab;

@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
 
+import type { PaneTab, FilePaneTab } from "../stores/workspace-tree";
+
+function asFile(tab: PaneTab): FilePaneTab {
+  if (tab.kind !== "file") throw new Error(`expected file tab, got ${tab.kind}`);
+  return tab;
+}
+
 import {
   nameFromPath,
   makeTab,
@@ -106,7 +113,7 @@ describe("leafSwapActiveTab", () => {
     const leaf = makeLeaf();
     const result = leafSwapActiveTab(leaf, "a.md");
     expect(result.tabs).toHaveLength(1);
-    expect(result.tabs[0].path).toBe("a.md");
+    expect(asFile(result.tabs[0]).path).toBe("a.md");
     expect(result.activeTabId).toBe(result.tabs[0].id);
   });
 
@@ -117,7 +124,7 @@ describe("leafSwapActiveTab", () => {
     const result = leafSwapActiveTab(withA, "b.md");
     expect(result.tabs).toHaveLength(1);
     expect(result.tabs[0].id).toBe(originalTabId); // same tab, new content
-    expect(result.tabs[0].path).toBe("b.md");
+    expect(asFile(result.tabs[0]).path).toBe("b.md");
     expect(result.tabs[0].name).toBe("b.md");
     expect(result.activeTabId).toBe(originalTabId);
   });
@@ -129,7 +136,7 @@ describe("leafSwapActiveTab", () => {
     const result = leafSwapActiveTab(withB, "a.md"); // swap request for a
     // Two tabs stay; a becomes active. b.md is NOT swapped out.
     expect(result.tabs).toHaveLength(2);
-    expect(result.tabs.map((t) => t.path)).toEqual(["a.md", "b.md"]);
+    expect(result.tabs.map((t) => asFile(t).path)).toEqual(["a.md", "b.md"]);
     expect(result.activeTabId).toBe(withA.tabs[0].id);
   });
 
@@ -139,8 +146,8 @@ describe("leafSwapActiveTab", () => {
     const dirty = leafSetTabDirty(withA, withA.tabs[0].id, true);
     const result = leafSwapActiveTab(dirty, "b.md");
     expect(result.tabs).toHaveLength(2); // appended, not swapped
-    expect(result.tabs[0].path).toBe("a.md"); // a survives unchanged
-    expect(result.tabs[1].path).toBe("b.md");
+    expect(asFile(result.tabs[0]).path).toBe("a.md"); // a survives unchanged
+    expect(asFile(result.tabs[1]).path).toBe("b.md");
     expect(result.activeTabId).toBe(result.tabs[1].id);
   });
 
@@ -151,7 +158,7 @@ describe("leafSwapActiveTab", () => {
     const noneActive = { ...withA, activeTabId: null };
     const result = leafSwapActiveTab(noneActive, "b.md");
     expect(result.tabs).toHaveLength(2);
-    expect(result.tabs[1].path).toBe("b.md");
+    expect(asFile(result.tabs[1]).path).toBe("b.md");
   });
 });
 
@@ -164,7 +171,7 @@ describe("leafSetTabDirty", () => {
     const leaf = makeLeaf();
     const withA = leafOpenTab(leaf, "a.md");
     const result = leafSetTabDirty(withA, withA.tabs[0].id, true);
-    expect(result.tabs[0].dirty).toBe(true);
+    expect(asFile(result.tabs[0]).dirty).toBe(true);
   });
 
   it("clears dirty back to false", () => {
@@ -172,7 +179,7 @@ describe("leafSetTabDirty", () => {
     const withA = leafOpenTab(leaf, "a.md");
     const dirty = leafSetTabDirty(withA, withA.tabs[0].id, true);
     const clean = leafSetTabDirty(dirty, withA.tabs[0].id, false);
-    expect(clean.tabs[0].dirty).toBe(false);
+    expect(asFile(clean.tabs[0]).dirty).toBe(false);
   });
 
   it("returns same reference when dirty unchanged (structural sharing)", () => {
@@ -213,7 +220,7 @@ describe("leafOpenTab", () => {
     const leaf = makeLeaf();
     const result = leafOpenTab(leaf, "a.md");
     expect(result.tabs).toHaveLength(1);
-    expect(result.tabs[0].path).toBe("a.md");
+    expect(asFile(result.tabs[0]).path).toBe("a.md");
     expect(result.activeTabId).toBe(result.tabs[0].id);
   });
 
@@ -571,7 +578,7 @@ describe("renamePathsInTree", () => {
     const withA = leafOpenTab(leaf, "notes/a.md");
     const result = renamePathsInTree(withA, "notes/a.md", "notes/b.md");
     if (result.type === "leaf") {
-      expect(result.tabs[0].path).toBe("notes/b.md");
+      expect(asFile(result.tabs[0]).path).toBe("notes/b.md");
       expect(result.tabs[0].name).toBe("b.md");
     }
   });
@@ -586,7 +593,7 @@ describe("renamePathsInTree", () => {
     if (result.type === "leaf") {
       // activeTabId should survive the rename
       expect(result.activeTabId).toBe(withA.tabs[0].id);
-      expect(result.tabs[0].path).toBe("notes/renamed.md");
+      expect(asFile(result.tabs[0]).path).toBe("notes/renamed.md");
     }
   });
 
@@ -595,7 +602,7 @@ describe("renamePathsInTree", () => {
     const withA = leafOpenTab(leaf, "notes/daily/journal.md");
     const result = renamePathsInTree(withA, "notes/daily", "notes/archive");
     if (result.type === "leaf") {
-      expect(result.tabs[0].path).toBe("notes/archive/journal.md");
+      expect(asFile(result.tabs[0]).path).toBe("notes/archive/journal.md");
       expect(result.tabs[0].name).toBe("journal.md");
     }
   });
@@ -630,7 +637,7 @@ describe("renamePathsInTree", () => {
     const leaves = allLeaves(result);
     for (const l of leaves) {
       for (const t of l.tabs) {
-        expect(t.path).toBe("notes/b.md");
+        expect(asFile(t).path).toBe("notes/b.md");
       }
     }
   });

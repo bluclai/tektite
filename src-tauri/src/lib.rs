@@ -1,11 +1,16 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
-use tektite_embed::{EmbedProgress, EmbedService, Embedder, FakeEmbedder, OnnxEmbedder, Priority, SemanticHit};
+use tektite_embed::{
+    compute_mutual_knn, EmbedProgress, EmbedService, Embedder, FakeEmbedder, KnnProgress,
+    MutualKnnOptions, OnnxEmbedder, Priority, SemanticHit,
+};
 use tektite_index::{
     BacklinkRow, FuzzyFileRow, GraphData, GraphEdge, GraphFilters, HeadingSearchRow, TagSearchRow,
     UnresolvedReport, UnresolvedSourceRef,
@@ -28,6 +33,29 @@ struct VaultState(Arc<Mutex<Option<Vault>>>);
 /// The filesystem watcher handle. Kept alive for the lifetime of the open
 /// vault; replaced when a new vault is opened.
 struct WatcherState(Mutex<Option<WatcherHandle>>);
+
+/// In-memory cache of mutual-kNN graph edges, plus the set of currently
+/// in-flight request cancellation flags.
+///
+/// Results are keyed by `(cache_version, filters_hash, k, min_similarity_bits)`
+/// so a repeated call with identical inputs skips the O(n²) scan. Cache entries
+/// are implicitly invalidated when the embedding cache mutates (the version
+/// counter bumps, so a stale key can never collide).
+#[derive(Default)]
+struct KnnInner {
+    cached: HashMap<KnnCacheKey, Vec<GraphEdge>>,
+    cancel: HashMap<String, Arc<AtomicBool>>,
+}
+
+struct KnnState(Mutex<KnnInner>);
+
+#[derive(PartialEq, Eq, Hash)]
+struct KnnCacheKey {
+    cache_version: u64,
+    filters_hash: u64,
+    k: u32,
+    min_sim_bits: u32,
+}
 
 #[derive(Debug, Serialize, Clone)]
 struct VaultFilesChangedPayload {
@@ -775,15 +803,13 @@ fn index_get_backlinks(
 // Graph view commands (Phase 0 — link edges only)
 // ---------------------------------------------------------------------------
 
-/// Returns the local link-neighborhood around `center_path` up to `depth` hops.
+/// Returns every indexed `.md` note with its resolved wiki-link edges.
 ///
-/// BFS over the `links` table; depth is clamped to `[1, 3]`. Filters are
-/// applied to every visited node except the center. Returns an empty graph
-/// if the center isn't indexed.
+/// Data source for the main-view graph tab. Applies optional filters to
+/// nodes, drops edges whose endpoints are filtered out. Returns an empty
+/// graph if the vault isn't open or the index isn't available.
 #[tauri::command]
-fn graph_get_neighborhood(
-    center_path: String,
-    depth: Option<u8>,
+fn graph_get_full_vault(
     filters: Option<GraphFilters>,
     vault_state: State<VaultState>,
 ) -> Result<GraphData, String> {
@@ -791,115 +817,234 @@ fn graph_get_neighborhood(
     let vault = guard.as_ref().ok_or("No vault open")?;
     let index = vault.index.as_ref().ok_or("Index not available")?;
 
-    let center_id = match index.id_for_path(&center_path).map_err(|e| e.to_string())? {
-        Some(id) => id,
-        None => {
-            return Ok(GraphData {
-                nodes: Vec::new(),
-                edges: Vec::new(),
-            })
-        }
-    };
-
-    let depth = depth.unwrap_or(tektite_index::DEFAULT_DEPTH);
     let filters = filters.unwrap_or_default();
-
-    index
-        .neighborhood(&center_id, depth, &filters)
-        .map_err(|e| e.to_string())
+    index.full_vault(&filters).map_err(|e| e.to_string())
 }
 
-/// Cosine-similarity threshold for graph semantic edges.
-///
-/// Intentionally lower than the pure-search threshold (~0.7+) because the
-/// graph's spatial context helps users evaluate relevance — they see the
-/// note title and position, not just a snippet.
-const GRAPH_SEMANTIC_THRESHOLD: f32 = 0.65;
+#[derive(Debug, Clone, Serialize)]
+struct KnnProgressPayload {
+    done: u32,
+    total: u32,
+    request_id: String,
+}
 
-/// Returns notes semantically related to `center_path` as graph edges.
+#[derive(Debug, Clone, Serialize)]
+struct KnnSignalPayload {
+    request_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GraphKnnResponse {
+    edges: Vec<GraphEdge>,
+}
+
+struct KnnProgressEmitter {
+    app: tauri::AppHandle,
+    request_id: String,
+    cancel: Arc<AtomicBool>,
+}
+
+impl KnnProgress for KnnProgressEmitter {
+    fn report(&mut self, done: u32, total: u32) {
+        let _ = self.app.emit(
+            "graph:knn-progress",
+            KnnProgressPayload {
+                done,
+                total,
+                request_id: self.request_id.clone(),
+            },
+        );
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Acquire)
+    }
+}
+
+/// Stable 64-bit hash of a `GraphFilters` value. Used as part of the
+/// mutual-kNN cache key so two calls with equivalent filter sets share a
+/// cached result even when the serialised forms arrive in different orders.
+fn hash_filters(filters: &GraphFilters) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    let mut tags = filters.tags.clone().unwrap_or_default();
+    tags.sort();
+    tags.hash(&mut hasher);
+    filters.folder.hash(&mut hasher);
+    filters.modified_after.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Computes mutual top-K semantic edges across the embedded corpus.
 ///
-/// Wraps the embed service's `search_related_notes`, applies a cosine
-/// threshold, resolves file paths to `NoteId`s, and returns a
-/// [`GraphData`] whose edges carry `kind = "semantic"` and a similarity
-/// score. The response also includes metadata for every node referenced by
-/// those edges (plus the center itself) so the frontend can render
-/// semantic-only neighbors without a second round trip.
+/// Runs brute-force cosine on a blocking worker thread, emitting
+/// `graph:knn-progress` events roughly every 50 files. Results are cached
+/// by `(cache_version, filters_hash, k, min_similarity)` so repeated calls
+/// with identical inputs skip the scan entirely.
 ///
-/// Returns an empty graph if the embed service is unavailable or the
-/// center note has no embeddings yet — never an error, so the frontend
-/// can treat semantic edges as a best-effort enhancement.
+/// `request_id` is a caller-provided string that `graph_cancel_knn` can
+/// target to abort superseded requests. Cancelled requests emit
+/// `graph:knn-cancelled` and return an empty edge list.
 #[tauri::command]
-fn graph_get_semantic_edges(
-    center_path: String,
-    limit: Option<usize>,
+fn graph_get_mutual_knn(
+    app: tauri::AppHandle,
+    k: Option<u32>,
+    min_similarity: Option<f32>,
+    filters: Option<GraphFilters>,
+    request_id: String,
     vault_state: State<VaultState>,
-) -> Result<GraphData, String> {
-    let empty = || GraphData {
-        nodes: Vec::new(),
-        edges: Vec::new(),
-    };
+    knn_state: State<KnnState>,
+) -> Result<GraphKnnResponse, String> {
+    let k = k.unwrap_or(4).clamp(1, 16);
+    let min_similarity = min_similarity.unwrap_or(0.55).clamp(0.0, 1.0);
+    let filters = filters.unwrap_or_default();
 
     let guard = vault_state.0.lock().unwrap();
     let vault = match guard.as_ref() {
         Some(v) => v,
-        None => return Ok(empty()),
+        None => {
+            let _ = app.emit(
+                "graph:knn-complete",
+                KnnSignalPayload {
+                    request_id: request_id.clone(),
+                },
+            );
+            return Ok(GraphKnnResponse { edges: Vec::new() });
+        }
     };
     let embed = match vault.embed.as_ref() {
         Some(e) => e,
-        None => return Ok(empty()),
+        None => {
+            let _ = app.emit(
+                "graph:knn-complete",
+                KnnSignalPayload {
+                    request_id: request_id.clone(),
+                },
+            );
+            return Ok(GraphKnnResponse { edges: Vec::new() });
+        }
     };
     let index = match vault.index.as_ref() {
         Some(i) => i,
-        None => return Ok(empty()),
+        None => {
+            let _ = app.emit(
+                "graph:knn-complete",
+                KnnSignalPayload {
+                    request_id: request_id.clone(),
+                },
+            );
+            return Ok(GraphKnnResponse { edges: Vec::new() });
+        }
     };
 
-    let center_id = match index.id_for_path(&center_path).map_err(|e| e.to_string())? {
-        Some(id) => id,
-        None => return Ok(empty()),
+    // Derive the allowed file set from the index so GraphFilters applies
+    // before the O(n²) scan runs. An empty filter list means "no filter".
+    let allowed = if filters.tags.as_ref().map_or(true, |t| t.is_empty())
+        && filters.folder.as_deref().map_or(true, str::is_empty)
+        && filters.modified_after.is_none()
+    {
+        None
+    } else {
+        let graph_data = index.full_vault(&filters).map_err(|e| e.to_string())?;
+        let ids: HashSet<String> = graph_data.nodes.into_iter().map(|n| n.id).collect();
+        Some(ids)
     };
 
-    let limit = limit.unwrap_or(8).min(16);
-    let hits = embed
-        .search_related_notes(&center_id, limit)
-        .map_err(|e| e.to_string())?;
+    let cache_version = embed.cache().version();
+    let cache_key = KnnCacheKey {
+        cache_version,
+        filters_hash: hash_filters(&filters),
+        k,
+        min_sim_bits: min_similarity.to_bits(),
+    };
 
-    let mut seen_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut edges: Vec<GraphEdge> = Vec::new();
-    for hit in hits {
-        if hit.score < GRAPH_SEMANTIC_THRESHOLD {
-            continue;
+    // Fast path: cached result. Still emit a complete signal so listeners
+    // that attached after the call started can observe the termination.
+    {
+        let inner = knn_state.0.lock().unwrap();
+        if let Some(cached) = inner.cached.get(&cache_key) {
+            let edges = cached.clone();
+            drop(inner);
+            let _ = app.emit(
+                "graph:knn-complete",
+                KnnSignalPayload {
+                    request_id: request_id.clone(),
+                },
+            );
+            return Ok(GraphKnnResponse { edges });
         }
-        let target_id = match index.id_for_path(&hit.file_path).map_err(|e| e.to_string())? {
-            Some(id) => id,
-            None => continue,
-        };
-        if target_id == center_id {
-            continue;
-        }
-        if !seen_targets.insert(target_id.clone()) {
-            continue;
-        }
-        edges.push(GraphEdge {
-            source: center_id.clone(),
-            target: target_id,
-            kind: "semantic".to_string(),
-            score: Some(hit.score),
-        });
     }
 
-    let mut ids: std::collections::HashSet<String> = seen_targets;
-    ids.insert(center_id);
-    let node_map = index
-        .graph_node_metadata(&ids)
-        .map_err(|e| e.to_string())?;
-    let mut nodes: Vec<_> = node_map.into_values().collect();
-    nodes.sort_by(|a, b| a.path.cmp(&b.path));
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut inner = knn_state.0.lock().unwrap();
+        inner.cancel.insert(request_id.clone(), cancel.clone());
+    }
 
-    edges.retain(|e| {
-        nodes.iter().any(|n| n.id == e.source) && nodes.iter().any(|n| n.id == e.target)
-    });
+    let opts = MutualKnnOptions {
+        k: k as usize,
+        min_similarity,
+    };
+    let mut emitter = KnnProgressEmitter {
+        app: app.clone(),
+        request_id: request_id.clone(),
+        cancel: cancel.clone(),
+    };
+    let raw_edges = compute_mutual_knn(embed.cache(), allowed.as_ref(), &opts, &mut emitter);
+    let was_cancelled = cancel.load(Ordering::Acquire);
 
-    Ok(GraphData { nodes, edges })
+    // Release cached file/index references before the long mutex acquire
+    // below — the guard is already bound to `vault`, which we no longer use.
+    drop(guard);
+
+    // Map internal edge pairs to GraphEdge DTOs.
+    let edges: Vec<GraphEdge> = raw_edges
+        .into_iter()
+        .map(|e| GraphEdge {
+            source: e.source,
+            target: e.target,
+            kind: "semantic".to_string(),
+            score: Some(e.score),
+        })
+        .collect();
+
+    {
+        let mut inner = knn_state.0.lock().unwrap();
+        inner.cancel.remove(&request_id);
+        if !was_cancelled {
+            inner.cached.insert(cache_key, edges.clone());
+        }
+    }
+
+    if was_cancelled {
+        let _ = app.emit(
+            "graph:knn-cancelled",
+            KnnSignalPayload {
+                request_id: request_id.clone(),
+            },
+        );
+        return Ok(GraphKnnResponse { edges: Vec::new() });
+    }
+
+    let _ = app.emit(
+        "graph:knn-complete",
+        KnnSignalPayload {
+            request_id: request_id.clone(),
+        },
+    );
+    Ok(GraphKnnResponse { edges })
+}
+
+/// Marks an in-flight mutual-kNN request as cancelled. The worker polls the
+/// cancel flag inside the compute loop and bails out at the next checkpoint.
+/// No-op if the request has already completed or was never started.
+#[tauri::command]
+fn graph_cancel_knn(request_id: String, knn_state: State<KnnState>) {
+    let inner = knn_state.0.lock().unwrap();
+    if let Some(flag) = inner.cancel.get(&request_id) {
+        flag.store(true, Ordering::Release);
+    }
 }
 
 /// Returns grouped unresolved wiki-link targets across the vault.
@@ -1331,6 +1476,44 @@ fn pinned_save(
 }
 
 // ---------------------------------------------------------------------------
+// Graph view persistence
+// ---------------------------------------------------------------------------
+//
+// Persisted per-vault at `<vault_root>/.tektite/graph.json`. Schema is
+// owned by the frontend (positions map, viewport, settings, open sections).
+// Returns `null` when the file doesn't exist so the caller can treat that
+// as first-open and fall back to BFS-ring seeding.
+
+fn graph_state_path(vault_state: &State<VaultState>) -> Result<PathBuf, String> {
+    let guard = vault_state.0.lock().unwrap();
+    let vault = guard.as_ref().ok_or_else(|| "No vault open".to_string())?;
+    Ok(vault.root.join(".tektite").join("graph.json"))
+}
+
+#[tauri::command]
+fn graph_state_load(vault_state: State<VaultState>) -> Result<serde_json::Value, String> {
+    let path = graph_state_path(&vault_state)?;
+    if !path.exists() {
+        return Ok(serde_json::Value::Null);
+    }
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn graph_state_save(
+    vault_state: State<VaultState>,
+    state: serde_json::Value,
+) -> Result<(), String> {
+    let path = graph_state_path(&vault_state)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // App entry point
 // ---------------------------------------------------------------------------
 
@@ -1339,6 +1522,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(VaultState(Arc::new(Mutex::new(None))))
         .manage(WatcherState(Mutex::new(None)))
+        .manage(KnnState(Mutex::new(KnnInner::default())))
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1361,8 +1545,9 @@ pub fn run() {
             index_get_backlinks,
             index_unresolved_link_report,
             index_unresolved_target_sources,
-            graph_get_neighborhood,
-            graph_get_semantic_edges,
+            graph_get_full_vault,
+            graph_get_mutual_knn,
+            graph_cancel_knn,
             graph_append_wiki_link,
             index_list_all_tags,
             search_full_text,
@@ -1376,6 +1561,8 @@ pub fn run() {
             workspace_save,
             pinned_load,
             pinned_save,
+            graph_state_load,
+            graph_state_save,
             aura_continue,
         ])
         .run(tauri::generate_context!())
